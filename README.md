@@ -106,21 +106,21 @@ source folder only if it is empty or was made by the installer.
 
 | Step | Question | Default |
 |---|---|---|
-| 1 | Language of minuta's messages: English or Spanish | English |
-| 2 | Your name, as it should appear in transcripts | your user name |
+| 1 | Language of minuta's messages: English or Spanish. Everything after this, yes/no answers included, is in that language | English |
+| 2 | Your name, as it should appear in transcripts | your full name from the system (`id -F` on macOS, the account's full name on Linux and Windows), else your user name |
 | 3 | Folder for recordings | the platform's data folder |
 | 4 | Audio format: `opus` (as recorded, smallest) or `mp3` (re-encoded, plays everywhere) | `opus` |
 | 5 | Also copy each meeting to another folder? Then, delete the local audio once the copy is confirmed? | no |
-| 6 | Transcription engine: `local` (free) or `vercel` (paid; asks the model and your API key) | `local` |
+| 6 | Transcription engine. Two lines explain the choice first: `local` is free and private, with the time it takes per hour of meeting on your computer; Vercel AI Gateway is fast and paid with your own key, with its price per hour, and only the stretches with speech are sent. With Vercel it asks the model, gives the link to create a key, asks for the key (hidden) and checks it without spending (it shows your balance), then the spending cap per transcription | `local` |
 | 7 | When to transcribe: on demand, or automatically after each call | on demand |
-| 8 | Spending cap per transcription, in US$ (only for `vercel`) | 1.0 |
-| 9 | Meeting language, like `en` or `es-419` (empty = detect) | detect |
+| 8 | Meeting language, like `en` or `es-419` (empty = detect) | detect |
+| 9 | When to record: `auto` (every call), `ask` (the browser asks Record / Don't record) or `manual` (only from the popup) | `auto` |
 | 10 | Send meetings anywhere else? One more destination, with its own questions | no |
 
 Then it saves `config.toml`, installs the background service (systemd user unit on Linux, launchd
-agent on macOS, a logon task on Windows), checks that the local server answers, opens your
-browser's extensions page and prints the extension folder and a pairing code. It waits up to ten
-minutes for the extension; Ctrl+C skips that step.
+agent on macOS, a logon task on Windows), checks that the local server answers, copies the
+extension to its own folder and walks you through loading it (below). It waits up to ten minutes
+for the extension; Ctrl+C skips that step.
 
 Every question has a flag, so the whole setup can run without questions (see `minuta setup --help`).
 Destinations are added with `--destination TYPE[:NAME]`, each followed by its `--option key=value`; write `key@env=VAR` to read a secret from an environment variable instead of the command line,
@@ -134,17 +134,21 @@ minuta setup --non-interactive --name Ana --engine local \
 
 ### Load the extension
 
-The extension is not in the Chrome Web Store. Load it from the folder that setup prints:
+The extension is not in the Chrome Web Store. Setup copies it to a folder that is easy to find,
+with no spaces in its path: `~/minuta-extension` (`%USERPROFILE%\minuta-extension` on Windows;
+`--extension-dir` or `[general] extension_dir` changes it). It finds the browsers you have, asks
+which one you use for Meet when there is more than one, opens that browser's extensions page, opens
+the folder in Finder, File Explorer or your file manager, and copies its path to the clipboard:
 
-1. Open `chrome://extensions`, `edge://extensions` or `brave://extensions`.
+1. Open `chrome://extensions`, `edge://extensions` or `brave://extensions` (the one of your browser).
 2. Turn on **Developer mode**.
-3. Click **Load unpacked** and choose the folder setup printed. With the installer it is:
-   - macOS: `~/Library/Application Support/minuta/app/extension`
-   - Linux: `~/.local/share/minuta/app/extension`
-   - Windows: `%LOCALAPPDATA%\minuta\app\extension`
+3. Drag the `minuta-extension` folder onto that page, or click **Load unpacked** and choose it.
 4. Pin the minuta icon (puzzle-piece menu), click it and type the pairing code, like `482-913`.
 
 The code is valid for 10 minutes and for 5 attempts. `minuta pair` prints a new one at any time.
+`minuta update` keeps the folder current. If you loaded the extension from the source folder of an
+older install (`~/Library/Application Support/minuta/app/extension` on macOS), it keeps working
+and is updated too; `minuta update` tells you so, and how to switch.
 
 ### Check that it works
 
@@ -153,13 +157,14 @@ minuta status
 ```
 
 ```text
-minuta 0.1.0
-  config      /home/you/.config/minuta/config.toml
-  data        /home/you/.local/share/minuta
-  service     installed, active
-  server      127.0.0.1:47321 answering
-  extension   paired, last seen 4 s ago
-  meetings    0 (0 without transcript, 0 with failed deliveries)
+Version        minuta 0.1.0
+Service        installed and running
+Local server   answering on 127.0.0.1:47321
+Extension      paired, last seen 4 s ago
+Recording      records every call
+Meetings       1 (1 without a transcript)
+Data folder    /home/you/.local/share/minuta
+Configuration  /home/you/.config/minuta/config.toml
 ```
 
 `minuta doctor` checks ffmpeg, the config, the data folder, the service, the server, the
@@ -168,8 +173,22 @@ for each problem.
 
 ## Daily use
 
-**Join a Meet call.** About two seconds after you are in the call, the minuta icon turns red and
-recording starts. You do not have to do anything.
+**Join a Meet call.** What happens depends on the recording mode (`minuta mode`, the menu's
+*Recording mode*, or the selector in the popup):
+
+| Mode | When a call starts |
+|---|---|
+| `auto` (default) | About two seconds after you are in the call, the minuta icon turns red and recording starts. |
+| `ask` | The browser shows a notification with **Record** and **Don't record**, and the icon shows `?`. Nothing is recorded until you choose Record (there or in the popup). No answer, no recording. |
+| `manual` | Nothing is recorded until you click **Record this call** in the popup. |
+
+The minuta app keeps the mode and the extension asks it; when the app does not answer (stopped,
+not paired) the extension behaves as in `ask`. In every mode the mute button, Pause, Finish and
+Don't record this call work as below.
+
+> [!NOTE]
+> `ask` and `manual` are there so you decide call by call. They do not tell the other participants
+> anything: asking for their consent is still up to you.
 
 **Leave the call.** A few seconds later the recording stops. The local server joins the audio,
 checks that the other participants were captured, marks the meeting `ready` and hands it to your
@@ -185,25 +204,79 @@ the meeting is closed after 90 seconds without audio.
 | Finish | Stops recording this call and saves what was recorded. *Record this call* starts a new recording. |
 | Don't record this call | Asks for confirmation, then deletes what was recorded and stops. Nothing is kept. |
 
-The popup also shows the last meeting (saving, transcribed, or a warning) and the server port.
+The popup also shows the last meeting (saving, transcribed, or a warning), the recording mode
+(which you can change there) and the server port.
 Serious problems also show as a browser notification: no microphone, Meet's mute button not found,
 the others' voices not being recorded, or the minuta app not answering (the extension then keeps
 up to about three hours of audio in memory until the app is back).
 
 **The command line.** `minuta` with no arguments opens a menu. Every action is also a command:
 
+Each action prints a header line and a separator, so one result never runs into the next; Quit
+leaves. Long steps show what is happening: a spinner with the step's name, and a bar with the
+percentage and the time left while the model downloads and while it transcribes.
+
 ```bash
-minuta list                       # meetings, newest last, with failed deliveries (--all, --json)
-minuta transcribe                 # pick a meeting from a list
+minuta list                       # meetings, newest first, with failed deliveries (--all, --json, --verbose)
+minuta transcribe                 # pick a meeting, then the engine (with its time and cost for that meeting)
 minuta transcribe latest          # or an id, or the start of one
 minuta transcribe latest --estimate          # only show what a paid engine would cost
 minuta transcribe latest --from 10 --to 25   # only minutes 10 to 25
 minuta transcribe latest --force             # transcribe again
 minuta retry                      # send again what failed, or what a new destination never got
+minuta mode ask                   # when to record: auto, ask or manual
+minuta engine                     # change the transcription engine (local or Vercel AI Gateway)
 minuta doctor                     # what works and what does not
 minuta pair                       # new pairing code (--rotate: new token, every browser pairs again)
 minuta service restart            # also start, stop, status, install, uninstall
 ```
+
+This is how it looks (with `language = "es"` every word, yes/no answers included, is in Spanish):
+
+```text
+$ minuta list
+Date                 Title         Length   Status   Transcript      Id
+─────────────────────────────────────────────────────────────────────────────────────
+12 Nov 2026, 16:50   Weekly sync   19 s     ready    no transcript   2026-11-12T22-50
+Transcribe one with `minuta transcribe <id>` (the start of the id is enough).
+
+$ minuta transcribe latest
+ok  Audio ready
+ok  Model tiny loaded
+⠸ Transcribing ━━━━━━━━━━━━━━━━━━━━╸━━━━━━━━━━━━━━━━━━━  52% 0:04
+ok  Transcribed (14 s of speech)
+ok  Sent to the destinations
+
+Transcript ready: Weekly sync  12 Nov 2026, 16:50
+Length    19 s
+Speakers  Ana (1 turn), Others (1 turn)
+Engine    local (tiny)
+File      "/home/you/Documents/2026-11-12 16-50 Weekly sync/transcript.md"  (copy of local)
+Also in   "/home/you/.local/share/minuta/meetings/2026-11-12T22-50-21-178Z_wjm-fzgq-css/transcript.md"  (data folder)
+Delivery  ok  local
+
+First lines:
+  00:00  Ana: Hi everyone, today we go over the plan for the quarter and the delivery dates.
+  00:08  Others: Great. The budget is approved; we still need to confirm the launch date.
+
+$ minuta destinations
+Name    Type    State   Sends                        Where
+──────────────────────────────────────────────────────────────────────
+local   local   on      audio, transcript, details   /home/you/Documents
+
+Types you can add:
+  command   run a program of yours for each meeting and transcript
+  local     keep meetings in the data folder, optionally copying them to another folder
+  notion    one page per meeting in a Notion database
+  obsidian  one note per meeting in your vault
+  rclone    Google Drive, Dropbox, OneDrive, S3, SFTP and more
+  webhook   POST to a URL (n8n, Zapier, your server), signed
+```
+
+The first time, the local model is downloaded with a bar that shows its size and the time left.
+From the menu, after transcribing, minuta offers to open the transcript with the system's app or to
+show it in the terminal. Paths are in quotes, ready to paste, and clickable where the terminal
+supports links. What happened in detail goes to `cli.log` (`--verbose` prints it too).
 
 Each meeting is a folder in `<data>/meetings/<id>/`, where the id is the start time and the Meet
 code, like `2026-03-02T15-30-00-000Z_abc-defg-hij`:
@@ -310,6 +383,10 @@ meeting, a dictionary of frequent errors, a correction pass) see the optional
 language = "en"              # minuta's messages: en | es
 data_dir = ""                # empty: the platform's data folder
 audio_format = "opus"        # opus (as recorded) | mp3 (re-encoded, stereo kept)
+extension_dir = ""           # empty: ~/minuta-extension, the folder you load in the browser
+
+[recording]
+mode = "auto"                # auto | ask | manual (see Daily use)
 
 [speakers]
 me = "Ana"                   # left channel
@@ -345,7 +422,7 @@ backend = "auto"             # auto: OS keyring, else .env | file: only .env
 [destinations.local]
 type = "local"
 send = ["audio", "transcript", "metadata"]
-# copy_to = "~/Dropbox/minuta"
+# copy_to = "~/Dropbox/minuta"   # copies are private to your user unless private = false
 
 [destinations.drive]
 type = "rclone"
@@ -374,9 +451,11 @@ minuta update
 It gets the source again from the branch or tag you installed (`MINUTA_REF`, the default branch
 when empty), reinstalls the command with the versions in `constraints.txt` and restarts the
 service. Without git it downloads that branch or tag as an archive and replaces the source folder
-in one step. A tag always gives the same version: to move to another one, run the installer again
-with the new `MINUTA_REF`. Then open the extensions page, click the reload icon on the minuta card,
-and reload any open Meet tab: a tab that was open before the extension reloaded is not recorded.
+in one step. It also refreshes the extension folder (`~/minuta-extension`). A tag always gives the
+same version: to move to another one, run the installer again with the new `MINUTA_REF`. Then open
+the extensions page, click the reload icon on the minuta card, and reload any open Meet tab: a tab
+that was open before the extension reloaded is not recorded. Each step prints a line; the output of
+git and uv is shown only when something fails.
 
 To uninstall:
 
@@ -386,8 +465,8 @@ minuta uninstall --yes --no-delete-data # no questions, keep recordings and tran
 minuta uninstall --yes --delete-data    # no questions, delete everything
 ```
 
-It removes the background service, the configuration, the stored secrets, the logs and the
-installed source, and runs `uv tool uninstall minuta`. On Windows the running `minuta.exe` cannot
+It removes the background service, the configuration, the stored secrets, the logs, the extension
+folder and the installed source (one line per step), and runs `uv tool uninstall minuta`. On Windows the running `minuta.exe` cannot
 delete itself, so that last step runs in the background a few seconds after the command ends. Then remove the extension from the extensions page. Copies already sent to destinations
 are not touched.
 
