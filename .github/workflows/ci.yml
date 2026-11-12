@@ -69,12 +69,13 @@ jobs:
       - run: uv run pytest -m "browser and not slow"
 
   install-unix:
-    name: install.sh (${{ matrix.os }})
+    name: install.sh (${{ matrix.os }}, ${{ matrix.app-dir }} app dir)
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        app-dir: [default, spaced]
     env:
       MINUTA_REPO_URL: ${{ github.workspace }}
       MINUTA_EXTRAS: ""
@@ -89,6 +90,9 @@ jobs:
             Windows) choco install ffmpeg -y --no-progress ;;
           esac
           ffmpeg -version | head -n 1
+      - name: Put the source in a folder whose path has spaces
+        if: matrix.app-dir == 'spaced'
+        run: echo "MINUTA_APP_DIR=$RUNNER_TEMP/minuta with spaces/app" >> "$GITHUB_ENV"
       - name: Install from this checkout and set up
         run: sh install.sh --non-interactive --name CI --no-browser --skip-extension
       - name: Use it
@@ -107,10 +111,15 @@ jobs:
             *) base="$HOME/.local/share/minuta"; test ! -e "$HOME/.config/systemd/user/minuta.service"; test ! -e "$HOME/.config/minuta" ;;
           esac
           test ! -e "$base"
+          test -z "${MINUTA_APP_DIR:-}" || test ! -e "$MINUTA_APP_DIR"
 
   install-windows:
-    name: install.ps1 (windows)
+    name: install.ps1 (windows, ${{ matrix.app-dir }} app dir)
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        app-dir: [default, spaced]
     env:
       MINUTA_REPO_URL: ${{ github.workspace }}
       MINUTA_EXTRAS: ""
@@ -125,6 +134,10 @@ jobs:
             Windows) choco install ffmpeg -y --no-progress ;;
           esac
           ffmpeg -version | head -n 1
+      - name: Put the source in a folder whose path has spaces
+        if: matrix.app-dir == 'spaced'
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_ENV -Value "MINUTA_APP_DIR=$env:RUNNER_TEMP\minuta with spaces\app"
       - name: Install from this checkout and set up
         shell: pwsh
         run: ./install.ps1 --non-interactive --name CI --no-browser --skip-extension
@@ -152,5 +165,6 @@ jobs:
           if (Test-Path $tool) { throw "tool environment left behind" }
           if (Test-Path (Join-Path $env:LOCALAPPDATA "minuta")) { throw "data or app folder left behind" }
           if (Test-Path (Join-Path $env:APPDATA "minuta")) { throw "config left behind" }
+          if ($env:MINUTA_APP_DIR -and (Test-Path $env:MINUTA_APP_DIR)) { throw "app folder left behind" }
           schtasks /Query /TN minuta 2>$null; if ($LASTEXITCODE -eq 0) { throw "scheduled task left behind" }
           exit 0
