@@ -147,19 +147,25 @@ class ServiceManager:
     def install(self) -> str:
         content = self.render()
         self.unit_path.parent.mkdir(parents=True, exist_ok=True)
-        if self.platform == "linux":
-            self.unit_path.write_text(content, encoding="utf-8")  # type: ignore[arg-type]
-            self._ok(["systemctl", "--user", "daemon-reload"])
-            self._ok(["systemctl", "--user", "enable", SYSTEMD_UNIT])
-            self._ok(["systemctl", "--user", "restart", SYSTEMD_UNIT])
-            return str(self.unit_path)
-        if self.platform == "macos":
-            paths.log_dir().mkdir(parents=True, exist_ok=True)
-            self.unit_path.write_bytes(content)  # type: ignore[arg-type]
-            self.run(["launchctl", "bootout", f"{self._uid_domain()}/{LAUNCHD_LABEL}"])
-            self._ok(["launchctl", "bootstrap", self._uid_domain(), str(self.unit_path)])
-            return str(self.unit_path)
-        return self._install_windows()
+        try:
+            if self.platform == "linux":
+                self.unit_path.write_text(content, encoding="utf-8")  # type: ignore[arg-type]
+                self._ok(["systemctl", "--user", "daemon-reload"])
+                self._ok(["systemctl", "--user", "enable", SYSTEMD_UNIT])
+                self._ok(["systemctl", "--user", "restart", SYSTEMD_UNIT])
+                return str(self.unit_path)
+            if self.platform == "macos":
+                paths.log_dir().mkdir(parents=True, exist_ok=True)
+                self.unit_path.write_bytes(content)  # type: ignore[arg-type]
+                self.run(["launchctl", "bootout", f"{self._uid_domain()}/{LAUNCHD_LABEL}"])
+                self._ok(["launchctl", "bootstrap", self._uid_domain(), str(self.unit_path)])
+                return str(self.unit_path)
+            return self._install_windows()
+        except Exception:
+            # A half-installed service would read as installed in `minuta status`.
+            if self.platform != "windows":
+                self.unit_path.unlink(missing_ok=True)
+            raise
 
     def _install_windows(self) -> str:
         r = self.run(render_schtasks_create(self.cmd))

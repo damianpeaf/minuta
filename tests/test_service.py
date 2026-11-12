@@ -84,6 +84,8 @@ def test_linux_install_reports_systemctl_failures(tmp_path, monkeypatch):
     mgr = ServiceManager("linux", home=tmp_path, runner=FakeRunner(fail={"enable"}), cmd=CMD)
     with pytest.raises(RuntimeError, match="enable"):
         mgr.install()
+    assert not mgr.unit_path.exists()  # a failed install must not read as installed
+    assert not mgr.status().installed
 
 
 def test_macos_install_boots_out_then_bootstraps(tmp_path, monkeypatch):
