@@ -53,9 +53,28 @@
 
 ## Quick start
 
-You need Chrome, Edge or Brave (desktop) and [ffmpeg](https://ffmpeg.org). Install ffmpeg first:
-`brew install ffmpeg` (macOS), `sudo apt install ffmpeg` or `sudo dnf install ffmpeg` (Linux),
-`winget install ffmpeg` (Windows). The installer warns if it is missing but does not install it.
+You need:
+
+- Chrome, Edge or Brave (desktop)
+- [ffmpeg](https://ffmpeg.org). The installer warns if it is missing but does not install it.
+
+Install ffmpeg first:
+
+```bash
+# macOS
+brew install ffmpeg
+
+# Debian, Ubuntu
+sudo apt install ffmpeg
+
+# Fedora
+sudo dnf install ffmpeg
+```
+
+```powershell
+# Windows
+winget install ffmpeg
+```
 
 **macOS and Linux:**
 
