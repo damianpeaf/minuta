@@ -67,7 +67,7 @@ class Prompter:
 
         qc = [Choice(title=label, value=value) for value, label in choices]
         chosen = next((c for c in qc if c.value == default), None)
-        return self._ask("select", message, default, choices=qc, default=chosen)
+        return self._ask("select", message, default, choices=qc, default=chosen, instruction=t("prompt.arrows"))
 
     def text(self, message: str, default: str = "") -> str:
         return self._ask("text", message, default, default=default)

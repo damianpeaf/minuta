@@ -205,6 +205,7 @@ STRINGS: dict[str, dict[str, str]] = {
     },
     # --- general -------------------------------------------------------------------------
     "answer.yes": {"en": "Yes", "es": "Sí"},
+    "prompt.arrows": {"en": "(arrow keys, Enter)", "es": "(flechas y Enter)"},
     "answer.no": {"en": "No", "es": "No"},
     "mark.ok": {"en": "ok", "es": "ok"},
     "mark.warn": {"en": "!", "es": "!"},
