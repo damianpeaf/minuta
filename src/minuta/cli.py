@@ -788,7 +788,23 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def use_select_on_macos() -> None:
+    """Prompts read the terminal through asyncio, whose macOS default (kqueue) cannot watch
+    /dev/tty: `curl ... | sh` hands setup the terminal that way and the first question crashed."""
+    if sys.platform != "darwin":
+        return
+    import asyncio
+    import selectors
+
+    class SelectPolicy(asyncio.DefaultEventLoopPolicy):
+        def new_event_loop(self):
+            return asyncio.SelectorEventLoop(selectors.SelectSelector())
+
+    asyncio.set_event_loop_policy(SelectPolicy())
+
+
 def main(argv: list[str] | None = None) -> int:
+    use_select_on_macos()
     parser = build_parser()
     args = parser.parse_args(argv)
     if not args.command:

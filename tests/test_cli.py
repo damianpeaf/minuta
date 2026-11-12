@@ -650,3 +650,18 @@ def test_option_reads_secret_from_environment(monkeypatch):
     import pytest
     with pytest.raises(ValueError):
         parse_options(["token@env=MY_TOKEN"])
+
+
+def test_macos_prompts_use_select_so_dev_tty_works(monkeypatch):
+    import asyncio
+    import selectors
+
+    monkeypatch.setattr(cli.sys, "platform", "darwin")
+    before = asyncio.get_event_loop_policy()
+    try:
+        cli.use_select_on_macos()
+        loop = asyncio.new_event_loop()
+        assert isinstance(loop._selector, selectors.SelectSelector)
+        loop.close()
+    finally:
+        asyncio.set_event_loop_policy(before)
