@@ -1,0 +1,55 @@
+name: Bug report
+description: Something does not work as documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not paste recordings, transcripts, meeting titles, tokens or keys. Logs mask secrets, but check them before pasting.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+  - type: input
+    id: version
+    attributes:
+      label: minuta version
+      placeholder: "output of `minuta --version`"
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: OS and browser
+      placeholder: "macOS 15 on Apple Silicon, Chrome 142"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Install or setup
+        - Recording (extension, popup)
+        - Local server or service
+        - Transcription
+        - A destination
+        - Update or uninstall
+        - Other
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `minuta doctor`
+      render: text
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: See docs/troubleshooting.md for where the logs are.
+      render: text

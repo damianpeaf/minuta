@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: FedericoCarboni/setup-ffmpeg@v3
+      - name: Install
+        run: uv sync --locked
+      - name: Lint
+        run: uv run ruff check
+      - name: Tests (fast)
+        run: uv run pytest
+
+  browser:
+    name: extension in Chromium
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - uses: FedericoCarboni/setup-ffmpeg@v3
+      - run: uv sync --locked
+      - run: uv run playwright install --with-deps chromium
+      - run: uv run pytest -m "browser and not slow"
+
+  install-unix:
+    name: install.sh (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      MINUTA_REPO_URL: ${{ github.workspace }}
+      MINUTA_EXTRAS: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: FedericoCarboni/setup-ffmpeg@v3
+      - name: Install from this checkout and set up
+        run: sh install.sh --non-interactive --name CI --no-browser --skip-extension
+      - name: Use it
+        run: |
+          MINUTA="$(uv tool dir --bin)/minuta"
+          "$MINUTA" --version
+          "$MINUTA" status
+          "$MINUTA" doctor || true
+          "$MINUTA" list
+      - name: Uninstall leaves nothing behind
+        run: |
+          "$(uv tool dir --bin)/minuta" uninstall --yes --delete-data
+          test ! -e "$(uv tool dir --bin)/minuta"
+          case "$(uname -s)" in
+            Darwin) base="$HOME/Library/Application Support/minuta"; test ! -e "$HOME/Library/LaunchAgents/io.minuta.server.plist" ;;
+            *) base="$HOME/.local/share/minuta"; test ! -e "$HOME/.config/systemd/user/minuta.service"; test ! -e "$HOME/.config/minuta" ;;
+          esac
+          test ! -e "$base"
+
+  install-windows:
+    name: install.ps1 (windows)
+    runs-on: windows-latest
+    env:
+      MINUTA_REPO_URL: ${{ github.workspace }}
+      MINUTA_EXTRAS: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: FedericoCarboni/setup-ffmpeg@v3
+      - name: Install from this checkout and set up
+        shell: pwsh
+        run: ./install.ps1 --non-interactive --name CI --no-browser --skip-extension
+      - name: Use it
+        shell: pwsh
+        run: |
+          $m = Join-Path (uv tool dir --bin).Trim() "minuta.exe"
+          & $m --version
+          & $m status
+          & $m list
+      - name: Uninstall
+        shell: pwsh
+        run: |
+          $m = Join-Path (uv tool dir --bin).Trim() "minuta.exe"
+          & $m uninstall --yes --delete-data
+          if (Test-Path (Join-Path $env:LOCALAPPDATA "minuta\app")) { throw "app folder left behind" }
+          if (Test-Path (Join-Path $env:APPDATA "minuta")) { throw "config left behind" }
+          schtasks /Query /TN minuta 2>$null; if ($LASTEXITCODE -eq 0) { throw "scheduled task left behind" }
+          exit 0

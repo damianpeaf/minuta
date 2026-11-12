@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>minuta</title>
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <span id="dot" class="dot"></span>
+    <div class="head-text">
+      <div id="status">Loading…</div>
+      <div id="meeting" class="muted"></div>
+    </div>
+    <div id="clock" class="clock"></div>
+  </header>
+
+  <ul id="problems" class="problems"></ul>
+
+  <section id="pairing" class="pairing" hidden>
+    <label for="code">Pairing code from <code>minuta setup</code> or <code>minuta pair</code></label>
+    <div class="row">
+      <input id="code" inputmode="numeric" autocomplete="off" placeholder="123-456" maxlength="7">
+      <button id="pair" type="button">Pair</button>
+    </div>
+    <div id="pair-error" class="error" hidden></div>
+  </section>
+
+  <section id="meters" class="meters" hidden>
+    <div class="meter">
+      <div class="meter-label"><span>You</span><span id="local-note" class="muted"></span></div>
+      <div class="bar"><div id="local-bar" class="fill"></div></div>
+    </div>
+    <div class="meter">
+      <div class="meter-label"><span>Others</span><span id="remote-note" class="muted"></span></div>
+      <div class="bar"><div id="remote-bar" class="fill"></div></div>
+    </div>
+  </section>
+
+  <section id="controls" class="controls" hidden>
+    <button id="pause" type="button">Pause</button>
+    <button id="finish" type="button">Finish</button>
+    <button id="discard" type="button" class="quiet">Don't record this call</button>
+    <div id="confirm" class="confirm" hidden>
+      <span>What was recorded is deleted and nothing is kept.</span>
+      <div class="confirm-actions">
+        <button id="discard-yes" type="button" class="danger">Delete</button>
+        <button id="discard-no" type="button" class="quiet">Cancel</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="skipped" class="controls" hidden>
+    <button id="record" type="button">Record this call</button>
+  </section>
+
+  <footer>
+    <div id="last" class="muted"></div>
+    <div class="row-between">
+      <span id="server" class="muted"></span>
+      <button id="settings-toggle" type="button" class="link">Port</button>
+    </div>
+    <div id="settings" class="row" hidden>
+      <input id="port" inputmode="numeric" maxlength="5" aria-label="Server port">
+      <button id="save-port" type="button">Save</button>
+    </div>
+  </footer>
+  <script src="popup.js"></script>
+</body>
+</html>

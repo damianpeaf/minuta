@@ -1,0 +1,38 @@
+name: Feature or destination request
+description: Suggest an improvement, or a new place to send meetings.
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind
+      options:
+        - New destination
+        - Transcription
+        - Recording or extension
+        - Command line or setup
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What do you want to do that you cannot do today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like minuta to do?
+  - type: textarea
+    id: destination
+    attributes:
+      label: For a new destination
+      description: The service, what it should receive (audio, transcript, metadata), how it authenticates, and whether rclone, the webhook or the command destination already cover it.
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Contributing
+      options:
+        - label: I could open a pull request for this (see CONTRIBUTING.md).

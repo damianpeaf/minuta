@@ -1,0 +1,86 @@
+:root {
+  --bg: #ffffff;
+  --text: #1f2937;
+  --muted: #6b7280;
+  --line: #e5e7eb;
+  --track: #f3f4f6;
+  --fill: #16a34a;
+  --rec: #dc2626;
+  --warn: #b45309;
+  --warn-bg: #fffbeb;
+  --info-bg: #f9fafb;
+  --button: #f3f4f6;
+  --button-hover: #e5e7eb;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1f2023;
+    --text: #e5e7eb;
+    --muted: #9ca3af;
+    --line: #34363b;
+    --track: #2b2d31;
+    --fill: #22c55e;
+    --warn: #fbbf24;
+    --warn-bg: #3a2f17;
+    --info-bg: #26282c;
+    --button: #2b2d31;
+    --button-hover: #383a40;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  width: 320px;
+  padding: 14px;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+[hidden] { display: none !important; }
+.muted { color: var(--muted); }
+header { display: flex; align-items: center; gap: 10px; }
+.head-text { flex: 1; min-width: 0; }
+#status { font-size: 14px; }
+#meeting { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; }
+.dot.rec { background: var(--rec); animation: pulse 1.6s ease-in-out infinite; }
+.dot.warn { background: var(--warn); }
+@keyframes pulse { 50% { opacity: .35; } }
+.clock { font-variant-numeric: tabular-nums; color: var(--muted); }
+.problems { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 6px; }
+.problems li { padding: 8px 10px; border-radius: 8px; background: var(--info-bg); color: var(--muted); }
+.problems li.serious { background: var(--warn-bg); color: var(--warn); }
+.meters { margin-top: 14px; display: grid; gap: 10px; }
+.meter-label { display: flex; justify-content: space-between; margin-bottom: 4px; }
+.bar { height: 8px; border-radius: 4px; background: var(--track); overflow: hidden; }
+.fill { height: 100%; width: 0; background: var(--fill); transition: width 120ms linear; }
+.controls { margin-top: 14px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+button {
+  font: inherit;
+  color: var(--text);
+  background: var(--button);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 7px 10px;
+  cursor: pointer;
+}
+button:hover { background: var(--button-hover); }
+button.quiet { grid-column: 1 / -1; background: none; border-color: transparent; color: var(--muted); }
+button.quiet:hover { color: var(--text); }
+button.danger { color: var(--warn); }
+#skipped button { grid-column: 1 / -1; }
+.confirm { grid-column: 1 / -1; padding: 8px 10px; border-radius: 8px; background: var(--info-bg); display: grid; gap: 8px; }
+.confirm-actions { display: flex; gap: 8px; }
+.confirm-actions button { flex: 1; }
+footer { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--line); display: grid; gap: 2px; font-size: 12px; }
+footer a { color: inherit; }
+.pairing { margin-top: 14px; display: grid; gap: 6px; }
+.pairing label { color: var(--muted); }
+.row { display: flex; gap: 8px; margin-top: 4px; }
+.row input { flex: 1; min-width: 0; font: inherit; color: var(--text); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+.row-between { display: flex; justify-content: space-between; align-items: center; }
+button.link { background: none; border: none; padding: 0; color: var(--muted); text-decoration: underline; }
+.error { color: var(--warn); }
+code { font-size: 12px; }

@@ -1,0 +1,99 @@
+[project]
+name = "minuta"
+version = "0.1.0"
+description = "Record Google Meet calls from your browser, keep them on your machine, and transcribe them when you want."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Damián Peña" }]
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+dependencies = [
+    "numpy>=1.24",
+    "platformdirs>=4.2",
+    "questionary>=2.0",
+    "keyring>=25.0",
+    "requests>=2.31",
+    "tomli>=2.0; python_version < '3.11'",
+    "tomli-w>=1.0",
+]
+
+[project.optional-dependencies]
+# Local transcription: mlx-whisper on Apple Silicon, faster-whisper everywhere else.
+local = [
+    "mlx-whisper>=0.4.2; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "faster-whisper>=1.1.0; sys_platform != 'darwin' or platform_machine != 'arm64'",
+]
+# NVIDIA GPU runtime for faster-whisper on Linux and Windows.
+cuda = [
+    "nvidia-cublas-cu12; sys_platform == 'linux' or sys_platform == 'win32'",
+    "nvidia-cudnn-cu12>=9,<10; sys_platform == 'linux' or sys_platform == 'win32'",
+]
+
+[project.scripts]
+minuta = "minuta.cli:main"
+
+[project.gui-scripts]
+# Same entry point without a console window; the Windows scheduled task runs this one.
+minuta-server = "minuta.cli:serve_main"
+
+[project.entry-points."minuta.destinations"]
+local = "minuta.destinations.local:LocalDestination"
+webhook = "minuta.destinations.webhook:WebhookDestination"
+command = "minuta.destinations.command:CommandDestination"
+obsidian = "minuta.destinations.obsidian:ObsidianDestination"
+rclone = "minuta.destinations.rclone:RcloneDestination"
+notion = "minuta.destinations.notion:NotionDestination"
+
+[project.urls]
+Homepage = "https://github.com/damianpeaf/minuta"
+
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/minuta"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"extension" = "minuta/_extension"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "playwright>=1.48",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = ["extension"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S"]
+ignore = [
+    "S101",   # assert in tests
+    "S603",   # subprocess without shell: arguments are built by us
+    "S607",   # partial executable paths (ffmpeg, git, systemctl) are resolved on PATH on purpose
+    "S104",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S105", "S106", "S108", "S310", "B017"]
+"src/minuta/i18n.py" = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-m 'not slow and not browser and not service and not rclone_live and not notion_live' -q"
+markers = [
+    "slow: real model downloads or long runs (run with -m slow)",
+    "browser: needs Playwright Chromium (run with -m browser)",
+    "service: installs a real background service for the current user",
+    "rclone_live: real rclone against a local folder, SFTP and S3 in Docker (run with -m rclone_live)",
+    "notion_live: real calls to the Notion API (needs MINUTA_TEST_NOTION_TOKEN and MINUTA_TEST_NOTION_PARENT)",
+]
