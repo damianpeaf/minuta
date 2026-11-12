@@ -14,6 +14,11 @@ let dropped = 0;
 let serverOk = true;
 let authOk = true; // false when the server refuses our token: the extension must be paired
 let latest = null; // last finished meeting, for the popup
+// Recording mode from the minuta app (auto | ask | manual); null until it answered.
+let serverMode = null;
+let modeKnown = false; // the app was asked at least once since the service worker started
+const MODES = ['auto', 'ask', 'manual'];
+const asked = new Map(); // tabId -> notification id of the open "Record this call?" question
 const tabs = new Map(); // tabId -> { s: last page state, seen }
 const ports = new Set();
 const notified = new Set(); // notifications already shown: `${session}:${key}`
@@ -71,11 +76,15 @@ function problems(s) {
   return out;
 }
 
+// Without an answer from the app (not running, not paired) nothing is recorded by itself: as in ask.
+const mode = () => (serverOk && authOk && paired() && MODES.includes(serverMode) ? serverMode : 'ask');
+
 function view() {
   const best = target();
   const s = best ? best.t.s : null;
   return { serverOk, paired: paired() && authOk, port: settings.port, pending: pending.length,
-    tabId: best ? best.tabId : null, state: s, problems: problems(s), latest };
+    tabId: best ? best.tabId : null, state: s, problems: problems(s), latest, mode: mode(),
+    modeFromApp: mode() === serverMode };
 }
 
 // --- Icon --------------------------------------------------------------------
@@ -100,8 +109,13 @@ function paint() {
   } else if (s && s.recording) {
     icon = 'rec'; badge = 'REC'; color = '#dc2626';
     title = 'minuta: recording';
+  } else if (s && s.awaiting) {
+    icon = 'paused'; badge = '?'; color = '#2563eb';
+    title = 'minuta: record this call? Choose in the notification or here';
   } else if (s && s.skipped) {
     title = 'minuta: this call is not being recorded';
+  } else if (s && s.manualIdle) {
+    title = 'minuta: not recording (manual mode). Click to record this call';
   }
   const key = [icon, badge, title].join('|');
   if (key === lastIcon) return;
@@ -127,10 +141,49 @@ function notify(v) {
   for (const id of [...notified]) if (id.startsWith(`${session}:`) && !active.has(id)) notified.delete(id);
 }
 
+// Ask mode: one notification per call with Record / Don't record. No answer: nothing is recorded.
+function askToRecord() {
+  if (!modeKnown) return;
+  for (const [tabId, t] of tabs) {
+    const id = asked.get(tabId);
+    const waiting = !!(t.s && t.s.awaiting && t.s.mode === 'ask');
+    if (waiting && !id) {
+      const nid = `ask:${tabId}:${Date.now()}`;
+      asked.set(tabId, nid);
+      chrome.notifications.create(nid, {
+        type: 'basic', iconUrl: 'icons/idle-128.png', title: 'minuta: record this call?',
+        message: `${t.s.title || t.s.code || 'Google Meet'}. Nothing is recorded until you choose Record.`,
+        buttons: [{ title: 'Record' }, { title: "Don't record" }], requireInteraction: true, priority: 2,
+      }, () => void chrome.runtime.lastError);
+    } else if (!waiting && id) {
+      asked.delete(tabId);
+      chrome.notifications.clear(id, () => void chrome.runtime.lastError);
+    }
+  }
+}
+
+chrome.notifications.onButtonClicked.addListener((id, index) => {
+  for (const [tabId, nid] of asked) {
+    if (nid !== id) continue;
+    sendCtl(tabId, index === 0 ? 'record' : 'skip');
+    asked.delete(tabId);
+    chrome.notifications.clear(id, () => void chrome.runtime.lastError);
+  }
+});
+
+// Each Meet tab learns the mode from here; a tab that has another one is told again.
+function pushMode() {
+  if (!modeKnown) return;
+  const m = mode();
+  for (const [tabId, t] of tabs) if (t.s && t.s.mode !== m) sendCtl(tabId, 'mode', { mode: m });
+}
+
 function refresh() {
   paint();
   const v = view();
   notify(v);
+  pushMode();
+  askToRecord();
   for (const port of ports) port.postMessage({ type: 'view', view: v });
 }
 
@@ -190,16 +243,39 @@ async function health() {
     if (serverOk && paired()) {
       enqueue({ src: 'minuta', type: 'ping' }); // also flushes anything pending
       try {
-        latest = (await getJson('/latest')).meeting || null;
+        const st = await getJson('/status');
+        latest = st.latest || null;
+        serverMode = st.recording_mode || null;
         authOk = true;
       } catch (e) {
         if (e instanceof AuthError) authOk = false;
+        serverMode = null;
       }
+    } else {
+      serverMode = null;
     }
   } catch (_) {
     serverOk = false;
+    serverMode = null;
   }
+  modeKnown = true;
   refresh();
+}
+
+async function setMode(m) {
+  if (!MODES.includes(m)) return { ok: false, error: 'unknown mode' };
+  try {
+    const res = await fetch(`${base()}/mode`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', [TOKEN_HEADER]: settings.token || '' },
+      body: JSON.stringify({ mode: m }),
+    });
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+    serverMode = (await res.json()).recording_mode || m;
+    refresh();
+    return { ok: true };
+  } catch (_) {
+    return { ok: false, error: 'minuta is not answering' };
+  }
 }
 
 async function pair(code, port) {
@@ -256,14 +332,16 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   if (tabs.delete(tabId)) refresh();
+  const id = asked.get(tabId);
+  if (id) { asked.delete(tabId); chrome.notifications.clear(id, () => void chrome.runtime.lastError); }
 });
 
 // --- Popup ---------------------------------------------------------------------
 let liveTimer = null;
 
-function sendCtl(tabId, action) {
+function sendCtl(tabId, action, extra = {}) {
   if (tabId == null) return;
-  chrome.tabs.sendMessage(tabId, { src: 'minuta-ctl', action }).catch(() => {});
+  chrome.tabs.sendMessage(tabId, { src: 'minuta-ctl', action, ...extra }).catch(() => {});
 }
 
 chrome.runtime.onConnect.addListener((port) => {
@@ -279,6 +357,8 @@ chrome.runtime.onConnect.addListener((port) => {
       port.postMessage({ type: 'pair', result: await pair(String(m.code || ''), m.port) });
     } else if (m.action === 'port') {
       port.postMessage({ type: 'port', result: await setPort(m.port) });
+    } else if (m.action === 'mode') {
+      port.postMessage({ type: 'mode', result: await setMode(m.mode) });
     } else if (typeof m.action === 'string') {
       sendCtl(view().tabId, m.action);
     }

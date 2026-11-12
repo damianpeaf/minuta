@@ -52,10 +52,20 @@
 
   <section id="skipped" class="controls" hidden>
     <button id="record" type="button">Record this call</button>
+    <button id="skip" type="button" class="quiet" hidden>Don't record</button>
   </section>
 
   <footer>
     <div id="last" class="muted"></div>
+    <div class="row-between">
+      <label for="mode" class="muted">Record</label>
+      <select id="mode" aria-label="When to record">
+        <option value="auto">every call</option>
+        <option value="ask">after asking me</option>
+        <option value="manual">only when I click</option>
+      </select>
+    </div>
+    <div id="mode-error" class="error" hidden></div>
     <div class="row-between">
       <span id="server" class="muted"></span>
       <button id="settings-toggle" type="button" class="link">Port</button>

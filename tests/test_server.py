@@ -284,3 +284,28 @@ def test_config_data_and_meeting_folders_are_private(server, cfg):
     for folder in (paths.config_dir(), config_mod.data_dir(cfg), meetings, meetings / s):
         assert mode(folder) == 0o700, folder
     assert mode(paths.config_file()) == 0o600
+
+
+def test_recording_mode_is_read_and_set_through_the_server(server):
+    token = pairing.get_token()
+    assert call(server, "GET", "/status", token=token)[1]["recording_mode"] == "auto"
+    assert call(server, "POST", "/mode", {"mode": "ask"})[0] == 401  # needs the token
+    code, body = call(server, "POST", "/mode", {"mode": "ask"}, token=token)
+    assert code == 200 and body["recording_mode"] == "ask"
+    assert config_mod.load()["recording"]["mode"] == "ask"
+    assert call(server, "POST", "/mode", {"mode": "always"}, token=token)[0] == 400
+    # A change made with the CLI (config.toml) is what the extension reads next.
+    cfg = config_mod.load()
+    cfg["recording"]["mode"] = "manual"
+    config_mod.save(cfg)
+    assert call(server, "GET", "/status", token=token)[1]["recording_mode"] == "manual"
+
+
+def test_meetings_are_listed_for_the_extension(server):
+    token = pairing.get_token()
+    m = MeetingStore(config_mod.meetings_dir(server.app.cfg)).get("2026-05-05T10-00-00-000Z_abc-defg-hij")
+    m.update(status="ready", title="Plan", code="abc-defg-hij", started_at="2026-05-05T10:00:00Z")
+    assert call(server, "GET", "/meetings")[0] == 401
+    code, body = call(server, "GET", "/meetings", token=token)
+    assert code == 200 and [x["title"] for x in body["meetings"]] == ["Plan"]
+    assert body["meetings"][0]["transcript"] is False

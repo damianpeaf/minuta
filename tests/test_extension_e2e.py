@@ -45,8 +45,15 @@ MEET = """<!doctype html><title>Team sync - Google Meet</title>
 
 
 @pytest.fixture
-def stack(cfg, tmp_path):
+def recording_mode():
+    return "auto"
+
+
+@pytest.fixture
+def stack(cfg, tmp_path, recording_mode):
     os.environ["PW_EXPERIMENTAL_SERVICE_WORKER_NETWORK_EVENTS"] = "1"
+    cfg["recording"]["mode"] = recording_mode
+    config_mod.save(cfg)
     srv = Server(cfg, port=0)
     srv.start_thread()
     with playwright_api.sync_playwright() as p:
@@ -60,6 +67,7 @@ def stack(cfg, tmp_path):
         ctx.route("https://meet.google.com/**", lambda r: r.fulfill(body=MEET, content_type="text/html"))
         sw = ctx.service_workers[0] if ctx.service_workers else ctx.wait_for_event("serviceworker")
         ext_id = sw.url.split("/")[2]
+        ctx.minuta_sw = sw
         yield ctx, ext_id, srv, MeetingStore(config_mod.meetings_dir(cfg))
         ctx.close()
     srv.stop()
@@ -138,7 +146,7 @@ def test_pair_record_control_and_save(stack):
 
     popup.click("#finish")
     expect(popup.locator("#status")).to_have_text("This call is not being recorded", timeout=10000)
-    wait(popup, lambda: m.status == "ready", seconds=30)
+    wait(popup, lambda: m.status == "ready" and "local" in (m.read().get("destinations") or {}), seconds=30)
     d = m.read()
     assert d["audio"]["file"] == "audio.opus" and d["duration_seconds"] > 5
     assert d["audio_check"]["ok"] is True and d["destinations"]["local"]["meeting"]["status"] == "ok"
@@ -160,3 +168,99 @@ def test_pair_record_control_and_save(stack):
     popup.click("#discard-yes")
     wait(popup, lambda: second.status == "discarded")
     assert not second.chunks_dir.exists() and second.audio_path is None
+
+
+def open_paired_popup(ctx, ext_id, srv):
+    expect = playwright_api.expect
+    popup = ctx.new_page()
+    popup.set_viewport_size({"width": 348, "height": 560})
+    popup.goto(f"chrome-extension://{ext_id}/popup.html")
+    expect(popup.locator("#pairing")).to_be_visible(timeout=15000)
+    popup.click("#settings-toggle")
+    popup.fill("#port", str(srv.port))
+    popup.click("#save-port")
+    expect(popup.locator("#server")).to_contain_text(f"port {srv.port}", timeout=10000)
+    popup.fill("#code", pairing.new_code())
+    popup.click("#pair")
+    expect(popup.locator("#pairing")).to_be_hidden(timeout=10000)
+    return popup
+
+
+def notifications(ctx) -> dict:
+    return ctx.minuta_sw.evaluate("new Promise((r) => chrome.notifications.getAll(r))")
+
+
+@pytest.mark.parametrize("recording_mode", ["ask"])
+def test_ask_mode_records_only_after_the_user_accepts(stack):
+    expect = playwright_api.expect
+    ctx, ext_id, srv, store = stack
+    popup = open_paired_popup(ctx, ext_id, srv)
+    expect(popup.locator("#mode")).to_have_value("ask", timeout=10000)
+    meet = ctx.new_page()
+    meet.goto("https://meet.google.com/meet/abc-defg-hij?authuser=0")  # a link with a prefix, as from Calendar
+    meet.evaluate("join()")
+    popup.bring_to_front()
+    expect(popup.locator("#status")).to_have_text("Record this call?", timeout=15000)
+    wait(popup, lambda: any(k.startswith("ask:") for k in notifications(ctx)))
+    popup.wait_for_timeout(5000)
+    assert not srv.app.last_audio and not store.all()  # nothing until the user says so
+    shot(popup, "4-ask")
+    popup.click("#record")
+    wait(popup, lambda: srv.app.last_audio)
+    m = store.get(next(iter(srv.app.last_audio)))
+    d = m.read()
+    assert d["code"] == "abc-defg-hij" and d["url"] == "https://meet.google.com/abc-defg-hij"
+    assert d["title"] == "Team sync"
+    expect(popup.locator("#status")).to_have_text("Recording", timeout=10000)
+    wait(popup, lambda: not any(k.startswith("ask:") for k in notifications(ctx)))
+
+
+@pytest.mark.parametrize("recording_mode", ["ask"])
+def test_ask_mode_records_nothing_when_the_user_declines(stack):
+    expect = playwright_api.expect
+    ctx, ext_id, srv, store = stack
+    popup = open_paired_popup(ctx, ext_id, srv)
+    meet = ctx.new_page()
+    meet.goto("https://meet.google.com/abc-defg-hij")
+    meet.evaluate("join()")
+    popup.bring_to_front()
+    expect(popup.locator("#status")).to_have_text("Record this call?", timeout=15000)
+    popup.click("#skip")
+    expect(popup.locator("#status")).to_have_text("This call is not being recorded", timeout=10000)
+    popup.wait_for_timeout(5000)
+    assert not srv.app.last_audio and not store.all()
+
+
+@pytest.mark.parametrize("recording_mode", ["manual"])
+def test_manual_mode_records_only_from_the_popup_and_the_popup_changes_the_mode(stack):
+    expect = playwright_api.expect
+    ctx, ext_id, srv, store = stack
+    popup = open_paired_popup(ctx, ext_id, srv)
+    meet = ctx.new_page()
+    meet.goto("https://meet.google.com/abc-defg-hij")
+    meet.evaluate("join()")
+    popup.bring_to_front()
+    expect(popup.locator("#status")).to_have_text("Not recording: click Record this call", timeout=15000)
+    popup.wait_for_timeout(5000)
+    assert not srv.app.last_audio and not [k for k in notifications(ctx) if k.startswith("ask:")]  # never asks
+    popup.click("#record")
+    wait(popup, lambda: srv.app.last_audio)
+    popup.click("#finish")
+    expect(popup.locator("#status")).to_have_text("This call is not being recorded", timeout=10000)
+    # The mode is the app's: changing it in the popup writes config.toml.
+    popup.select_option("#mode", "auto")
+    wait(popup, lambda: config_mod.load()["recording"]["mode"] == "auto")
+
+
+@pytest.mark.parametrize("recording_mode", ["auto"])
+def test_without_the_app_the_extension_asks_instead_of_recording(stack):
+    expect = playwright_api.expect
+    ctx, ext_id, srv, store = stack
+    popup = open_paired_popup(ctx, ext_id, srv)
+    srv.stop()
+    meet = ctx.new_page()
+    meet.goto("https://meet.google.com/abc-defg-hij")
+    meet.evaluate("join()")
+    popup.bring_to_front()
+    popup.reload()  # asks the app again, which is gone
+    expect(popup.locator("#status")).to_have_text("Record this call?", timeout=20000)

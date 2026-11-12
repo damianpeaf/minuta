@@ -7,10 +7,11 @@ const assert = require('assert');
 const [, , file, scenario] = process.argv;
 const TOKEN = 'tok-123456789';
 
-function load({ serverUp = true, stored = { port: 47321, token: TOKEN }, validToken = TOKEN, pairCode = '111-222' } = {}) {
+function load({ serverUp = true, stored = { port: 47321, token: TOKEN }, validToken = TOKEN, pairCode = '111-222',
+  mode = 'auto' } = {}) {
   const h = {
     icon: null, badge: null, title: null, notifications: [], sent: [], ctl: [], ports: [], fetches: [],
-    serverUp, validToken, storage: { ...stored }, listeners: {},
+    serverUp, validToken, mode, storage: { ...stored }, listeners: {}, cleared: [],
   };
   const event = (name) => ({ addListener: (f) => { h.listeners[name] = f; } });
   const chrome = {
@@ -20,7 +21,11 @@ function load({ serverUp = true, stored = { port: 47321, token: TOKEN }, validTo
       setBadgeBackgroundColor: () => {},
       setTitle: (o) => { h.title = o.title; },
     },
-    notifications: { create: (id, o, cb) => { h.notifications.push({ id, ...o }); cb && cb(); } },
+    notifications: {
+      create: (id, o, cb) => { h.notifications.push({ id, ...o }); cb && cb(); },
+      clear: (id, cb) => { h.cleared.push(id); cb && cb(); },
+      onButtonClicked: event('button'),
+    },
     runtime: { onMessage: event('message'), onConnect: event('connect'), lastError: null },
     tabs: {
       onRemoved: event('removed'),
@@ -46,7 +51,11 @@ function load({ serverUp = true, stored = { port: 47321, token: TOKEN }, validTo
     }
     const token = (opts.headers || {})['X-Minuta-Token'];
     if (token !== h.validToken) return reply(401, { error: 'missing or wrong token' });
-    if (path === '/latest') return reply(200, { ok: true, meeting: { id: 'm0', title: 'Previous', status: 'ready', transcribed: true } });
+    if (path === '/status') {
+      return reply(200, { ok: true, recording_mode: h.mode,
+        latest: { id: 'm0', title: 'Previous', status: 'ready', transcribed: true } });
+    }
+    if (path === '/mode') { h.mode = JSON.parse(opts.body).mode; return reply(200, { ok: true, recording_mode: h.mode }); }
     h.sent.push({ path, port: new URL(url).port, ...JSON.parse(opts.body) });
     return reply(200, { ok: true });
   };
@@ -79,7 +88,9 @@ function load({ serverUp = true, stored = { port: 47321, token: TOKEN }, validTo
 }
 
 const hb = (extra = {}) => ({ type: 'heartbeat', session: 's1', recording: true, inCall: true, ctxState: 'running',
-  muted: false, localTrack: true, remoteSignal: true, paused: false, elapsedMs: 1000, ...extra });
+  muted: false, localTrack: true, remoteSignal: true, paused: false, elapsedMs: 1000, mode: 'auto', ...extra });
+const waiting = (extra = {}) => ({ type: 'state', session: null, recording: false, inCall: true, title: 'Plan',
+  ...extra });
 
 const scenarios = {
   async recording_paints_rec_and_sends_token() {
@@ -235,7 +246,7 @@ const scenarios = {
   async popup_gets_state_levels_and_sends_controls() {
     const h = load();
     h.msg(hb(), 9);
-    h.msg({ type: 'heartbeat', recording: false, inCall: false }, 3); // another Meet tab, not in a call
+    h.msg({ type: 'heartbeat', recording: false, inCall: false, mode: 'auto' }, 3); // another Meet tab, not in a call
     await h.flush();
     const port = h.connect();
     assert.equal(h.lastView(port).tabId, 9);
@@ -258,6 +269,52 @@ const scenarios = {
     await h.flush();
     assert.equal(h.icon, 'icons/idle-16.png');
     assert.equal(h.sent.filter((m) => m.type !== 'ping').at(-1).type, 'discard');
+  },
+
+  async every_tab_is_told_the_mode_of_the_app() {
+    const h = load({ mode: 'manual' });
+    await h.flush();
+    h.msg(waiting({ mode: null }), 4);
+    await h.flush();
+    assert.ok(h.ctl.some((c) => c.tabId === 4 && c.action === 'mode' && c.mode === 'manual'));
+    // From the popup: the app stores it, and the tabs are told.
+    const port = h.connect();
+    await h.flush();
+    assert.equal(h.lastView(port).mode, 'manual');
+    port.onMsg({ action: 'mode', mode: 'ask' });
+    await h.flush();
+    assert.equal(h.mode, 'ask');
+    assert.ok(h.ctl.some((c) => c.tabId === 4 && c.action === 'mode' && c.mode === 'ask'));
+  },
+
+  async without_the_app_tabs_are_told_to_ask() {
+    const h = load({ serverUp: false });
+    await h.flush();
+    h.msg(waiting({ mode: null }), 4);
+    await h.flush();
+    assert.ok(h.ctl.some((c) => c.tabId === 4 && c.action === 'mode' && c.mode === 'ask'));
+  },
+
+  async ask_mode_notifies_once_and_the_buttons_control_the_tab() {
+    const h = load({ mode: 'ask' });
+    await h.flush();
+    h.msg(waiting({ mode: 'ask', awaiting: true }), 4);
+    h.msg(waiting({ mode: 'ask', awaiting: true }), 4);
+    await h.flush();
+    const asks = h.notifications.filter((n) => n.id.startsWith('ask:'));
+    assert.equal(asks.length, 1);
+    assert.deepEqual(asks[0].buttons.map((b) => b.title), ['Record', "Don't record"]);
+    assert.equal(h.badge, '?');
+    h.listeners.button(asks[0].id, 1);
+    assert.deepEqual(h.ctl.at(-1), { tabId: 4, src: 'minuta-ctl', action: 'skip' });
+    assert.ok(h.cleared.includes(asks[0].id));
+    // Recording from the popup instead closes the question.
+    h.msg(waiting({ mode: 'ask', awaiting: true }), 5);
+    await h.flush();
+    const second = h.notifications.filter((n) => n.id.startsWith('ask:')).at(-1);
+    h.msg(hb({ mode: 'ask' }), 5);
+    await h.flush();
+    assert.ok(h.cleared.includes(second.id));
   },
 
   async closed_tab_is_forgotten() {

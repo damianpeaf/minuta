@@ -38,6 +38,8 @@ function render() {
   if (recording && s.paused) status = 'Paused';
   else if (recording) status = 'Recording';
   else if (s && s.skipped) status = 'This call is not being recorded';
+  else if (s && s.awaiting) status = 'Record this call?';
+  else if (s && s.manualIdle) status = 'Not recording: click Record this call';
   else if (s && s.inCall) status = 'In a call, about to record';
   $('status').textContent = status;
   $('meeting').textContent = s && (s.inCall || recording) ? (s.title || s.code || 'Google Meet') : '';
@@ -53,7 +55,10 @@ function render() {
   $('pairing').hidden = !view || view.paired;
   $('meters').hidden = !recording;
   $('controls').hidden = !recording;
-  $('skipped').hidden = !(s && s.skipped);
+  $('skipped').hidden = !(s && (s.skipped || s.awaiting || s.manualIdle));
+  $('skip').hidden = !(s && s.awaiting);
+  if (view && document.activeElement !== $('mode')) $('mode').value = view.mode;
+  $('mode').disabled = !(view && view.serverOk && view.paired);
   if (recording) {
     $('pause').textContent = s.paused ? 'Resume' : 'Pause';
     $('local-note').textContent = s.paused ? 'paused' : s.muted === true ? 'muted in Meet'
@@ -106,6 +111,9 @@ port.onMessage.addListener((m) => {
     $('pair-error').hidden = m.result.ok;
     $('pair-error').textContent = m.result.ok ? '' : m.result.error;
     if (m.result.ok) $('code').value = '';
+  } else if (m.type === 'mode') {
+    $('mode-error').hidden = m.result.ok;
+    $('mode-error').textContent = m.result.ok ? '' : m.result.error;
   } else if (m.type === 'port') {
     if (m.result.ok) $('settings').hidden = true;
   }
@@ -115,6 +123,8 @@ const act = (action, extra = {}) => port.postMessage({ action, ...extra });
 $('pause').addEventListener('click', () => act(view && view.state && view.state.paused ? 'resume' : 'pause'));
 $('finish').addEventListener('click', () => act('finish'));
 $('record').addEventListener('click', () => act('record'));
+$('skip').addEventListener('click', () => act('skip'));
+$('mode').addEventListener('change', () => act('mode', { mode: $('mode').value }));
 $('discard').addEventListener('click', () => { $('confirm').hidden = false; $('discard').hidden = true; });
 $('discard-no').addEventListener('click', () => { $('confirm').hidden = true; $('discard').hidden = false; });
 $('discard-yes').addEventListener('click', () => { act('discard'); $('confirm').hidden = true; $('discard').hidden = false; });

@@ -64,7 +64,9 @@ def open_page(chrome, route="/abc-defg-hij"):
       performance.now = () => now() + window.advance;
     """
     script = ROOT / "extension/page.js"
-    context.add_init_script(bootstrap + script.read_text())
+    # The extension tells page.js the recording mode; these tests record every call.
+    auto = "\nwindow.postMessage({ src: 'minuta-ctl', action: 'mode', mode: 'auto' }, '*');"
+    context.add_init_script(bootstrap + script.read_text() + auto)
     page = context.new_page()
     page.goto(base + route)
     return context, page

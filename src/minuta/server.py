@@ -10,6 +10,8 @@ Endpoints (POST bodies are JSON):
     GET  /latest    the latest finished meeting (for the popup)
     POST /ping      the extension is alive (sent even without a Meet tab)
     POST /heartbeat state of a Meet tab every 5 s; adds to the meeting's diagnostics
+    GET  /meetings  every meeting, as `minuta list --json`
+    POST /mode      {"mode": "auto" | "ask" | "manual"}: when the extension records
     POST /start /chunk /title /mute /pause /end /discard   one recording
 """
 
@@ -195,10 +197,26 @@ class App:
                     "transcribed": m.has_transcript()}
         return None
 
+    def recording_mode(self) -> str:
+        """auto, ask or manual: what the extension does when a call starts. The extension asks here."""
+        self.reload_config()
+        from minuta.actions import recording_mode
+
+        return recording_mode(self.cfg)
+
+    def set_recording_mode(self, mode: str) -> str:
+        from minuta.actions import set_recording_mode
+
+        set_recording_mode(mode)
+        self.reload_config()
+        log.info("recording mode set to %s", mode)
+        return self.recording_mode()
+
     def status(self) -> dict:
         with self.lock:
             recording = list(self.last_audio)
         return {"ok": True, "version": __version__, "recording": recording, "queued": self.queue.qsize(),
+                "recording_mode": self.recording_mode(),
                 "last_heartbeat": self.last_heartbeat, "last_seen": self.last_seen, "heartbeat": self.heartbeat,
                 "paired_origins": pairing.read_state().get("allowed_origins", []), "latest": self.latest()}
 
@@ -207,6 +225,11 @@ class App:
         if kind == "ping":
             self.seen()
             return 200, {"ok": True}
+        if kind == "mode":
+            try:
+                return 200, {"ok": True, "recording_mode": self.set_recording_mode(str(msg.get("mode") or ""))}
+            except ValueError as e:
+                return 400, {"error": str(e)}
         if kind == "heartbeat":
             hb = {k: v for k, v in msg.items() if k not in ("src", "type")}
             self.seen(hb)
@@ -356,12 +379,16 @@ def make_handler(app: App, port_ref: list[int]):
                     return
                 return self._json(200, {"ok": True, "app": "minuta", "version": __version__,
                                         "paired": bool(pairing.read_state().get("allowed_origins"))})
-            if path not in ("/status", "/latest"):
+            if path not in ("/status", "/latest", "/meetings"):
                 return self._json(404, {"error": "not found"})
             if not self._gate(needs_token=True):
                 return
             if path == "/status":
                 return self._json(200, app.status())
+            if path == "/meetings":
+                from minuta.actions import meetings
+
+                return self._json(200, {"ok": True, "meetings": meetings(app.cfg)})
             return self._json(200, {"ok": True, "meeting": app.latest()})
 
         def do_POST(self):  # noqa: N802

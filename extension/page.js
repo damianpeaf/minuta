@@ -31,6 +31,9 @@
   let rec = null;
   let captureError = null;
   let skipCall = null; // call the user asked not to record (or finished early)
+  let approvedCall = null; // call the user asked to record (ask and manual modes)
+  // auto | ask | manual, from the minuta app through the extension. Unknown: nothing starts by itself.
+  let mode = null;
   let liveUntil = 0;
 
   const post = (type, payload = {}) => window.postMessage({ src: 'minuta', type, ...payload }, '*');
@@ -145,17 +148,23 @@
     return null;
   }
 
+  // meet.google.com/abc-defg-hij, and also /meet/abc-defg-hij or /_meet/abc-defg-hij (links from
+  // Calendar, Gmail and the Meet app).
   function meetingCode() {
-    const m = location.pathname.match(/^\/([a-z]{3}-[a-z]{4}-[a-z]{3})(?:\/|$)/);
+    const m = location.pathname.match(/(?:^|\/)([a-z]{3}-[a-z]{4}-[a-z]{3})(?:\/|$)/);
     return m ? m[1] : null;
   }
+  // The link to the call without query or extra path: the same for everyone invited.
+  const meetingUrl = () => (meetingCode() ? `https://meet.google.com/${meetingCode()}` : location.origin + location.pathname);
   const callKey = () => meetingCode() || location.pathname;
 
   function meetingTitle() {
     const el = document.querySelector('[data-meeting-title]');
     const t = el && el.getAttribute('data-meeting-title');
     if (t) return t;
-    return document.title.replace(/\s*-\s*Google Meet\s*$/i, '').replace(/^Meet\s*-\s*/i, '').trim();
+    const title = document.title.replace(/\s*-\s*Google Meet\s*$/i, '').replace(/^Meet\s*-\s*/i, '').trim();
+    // Without a calendar event the tab only shows the code: that is not a title.
+    return title && title !== meetingCode() && title !== 'Google Meet' && title !== 'Meet' ? title : null;
   }
 
   // --- Capture --------------------------------------------------------------
@@ -322,7 +331,7 @@
     const r = rec;
     recorder.onstop = () => { chain = chain.then(() => post(r.discard ? 'discard' : 'end', { session })); };
     recorder.start(CHUNK_MS);
-    post('start', { session, code, title: meetingTitle(), url: location.href, startedAt: rec.startedAt });
+    post('start', { session, code, title: meetingTitle(), url: meetingUrl(), startedAt: rec.startedAt });
   }
 
   function stop({ discard = false } = {}) {
@@ -395,6 +404,11 @@
       peerAlive: peerAlive(),
       recording: !!rec,
       skipped: !rec && skipCall === callKey() && inCall(),
+      mode,
+      // In a call, not recording, and waiting for the user: ask mode (or mode not known yet).
+      awaiting: !rec && inCall() && skipCall !== callKey() && approvedCall !== callKey() && mode !== 'auto' &&
+        mode !== 'manual',
+      manualIdle: !rec && inCall() && skipCall !== callKey() && approvedCall !== callKey() && mode === 'manual',
       paused: rec ? rec.paused : false,
       elapsedMs: rec ? now() - rec.started : 0,
       muted: isMuted(), // what Meet shows now; rec.muted starts as null until the first cycle
@@ -425,7 +439,9 @@
       case 'resume': setPaused(false); break;
       case 'finish': if (rec) { skipCall = callKey(); stop(); } break;
       case 'discard': if (rec) { skipCall = callKey(); stop({ discard: true }); } break;
-      case 'record': skipCall = null; break;
+      case 'record': skipCall = null; approvedCall = callKey(); break;
+      case 'skip': skipCall = callKey(); approvedCall = null; break;
+      case 'mode': mode = ['auto', 'ask', 'manual'].includes(e.data.mode) ? e.data.mode : null; break;
       default: return;
     }
     post('state', snapshot());
@@ -474,8 +490,10 @@
     const alive = here || (!!rec && peerAlive());
     if (here) inCallPolls++; else inCallPolls = 0;
     if (alive) outPolls = 0; else outPolls++;
-    if (!here && outPolls >= END_POLLS) skipCall = null; // after leaving, the next call is recorded
-    if (!rec && inCallPolls >= START_POLLS && skipCall !== callKey()) start();
+    if (!here && outPolls >= END_POLLS) { skipCall = null; approvedCall = null; } // the next call starts fresh
+    const allowed = mode === 'auto' || approvedCall === callKey();
+    if (!rec && inCallPolls >= START_POLLS && skipCall !== callKey() && allowed) start();
+    if (inCallPolls === 1) post('state', snapshot()); // the extension answers with the recording mode
     if (rec && outPolls >= END_POLLS) stop();
 
     if (rec && rec.title !== meetingTitle()) {
