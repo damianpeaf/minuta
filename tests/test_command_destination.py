@@ -88,7 +88,8 @@ def test_odd_characters_reach_the_program_verbatim_without_a_shell(tmp_path, rec
 
 def test_a_command_line_string_is_split_but_never_run_by_a_shell(tmp_path, recorder):
     m = make_meeting(tmp_path / "meetings")
-    line = f'"{sys.executable}" "{recorder}" "two words" \'$HOME\' ";" "$(touch pwned)"'
+    q = '"' if os.name == "nt" else "'"  # Windows command lines, like cmd.exe, only quote with double quotes
+    line = f'"{sys.executable}" "{recorder}" "two words" {q}$HOME{q} ";" "$(touch pwned)"'
     assert parse_command(line)[2:] == ["two words", "$HOME", ";", "$(touch pwned)"]
     cmd(line).send_meeting(m, MeetingParts(metadata={"id": m.id}))
     (call,) = calls(recorder)
