@@ -13,7 +13,10 @@ EXPORT = ["uv", "export", "--frozen", "--no-hashes", "--no-dev", "--all-extras",
 
 
 def pins(text: str) -> list[str]:
-    return [line for line in text.splitlines() if line.strip() and not line.startswith("#")]
+    """The `name==version` pins, without the environment markers: how uv writes the markers changes
+    between uv releases (it simplifies them differently) while the pinned versions do not."""
+    lines = (line.split(";", 1)[0].strip() for line in text.splitlines() if not line.startswith("#"))
+    return sorted(line.lower() for line in lines if line)
 
 
 @pytest.mark.skipif(not shutil.which("uv"), reason="uv not installed")
