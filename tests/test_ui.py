@@ -93,3 +93,14 @@ def test_update_says_when_the_browser_still_loads_the_old_folder(tmp_path, home,
     prefs["extensions"]["settings"]["abc"]["path"] = str(home / "minuta-extension")
     (profile / "Secure Preferences").write_text(json.dumps(prefs))
     assert not browser.sync_extension(cfg).old_folder_in_use
+
+
+def test_nothing_is_opened_on_a_linux_without_a_desktop(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(ui.sys, "platform", "linux")
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setattr(ui.subprocess, "Popen", lambda *a, **k: calls.append(a))
+    assert ui.open_with_system(tmp_path) is False and calls == []
+    monkeypatch.setenv("DISPLAY", ":0")
+    assert ui.open_with_system(tmp_path) is True and calls[0][0][0] == "xdg-open"

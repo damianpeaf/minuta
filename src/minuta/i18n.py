@@ -13,7 +13,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "es": "Configuración de minuta. Las grabaciones se quedan en esta computadora; no se envía nada a menos "
               "que agregues un destino.",
     },
-    "setup.language": {"en": "Language for minuta", "es": "Idioma de minuta"},
+    "setup.language": {"en": "Language / Idioma", "es": "Idioma / Language"},
     "setup.name": {"en": "Your name, as it should appear in transcripts", "es": "Tu nombre, como debe aparecer en las transcripciones"},
     "setup.others": {"en": "Others", "es": "Otros"},
     "setup.data_dir": {"en": "Folder for recordings", "es": "Carpeta para las grabaciones"},
@@ -234,8 +234,8 @@ STRINGS: dict[str, dict[str, str]] = {
     "part.transcript": {"en": "transcript", "es": "transcripción"},
     "part.metadata": {"en": "details", "es": "datos"},
     # --- menu ------------------------------------------------------------------------------
-    "header.on": {"en": "service on", "es": "servicio activo"},
-    "header.off": {"en": "service not answering", "es": "el servicio no responde"},
+    "header.on": {"en": "running", "es": "en marcha"},
+    "header.off": {"en": "the local server is not answering", "es": "el servidor local no responde"},
     "header.paired": {"en": "extension paired", "es": "extensión emparejada"},
     "header.unpaired": {"en": "extension not paired", "es": "extensión sin emparejar"},
     "header.pending": {"en": "{n} to transcribe", "es": "{n} sin transcribir"},

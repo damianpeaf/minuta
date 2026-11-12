@@ -243,7 +243,10 @@ def clock(seconds: float) -> str:
 
 # --- the desktop --------------------------------------------------------------------------
 def open_with_system(path: Path) -> bool:
-    """Open a file or folder with the app the system uses for it."""
+    """Open a file or folder with the app the system uses for it. Not on a Linux without a desktop
+    (over ssh xdg-open would start a browser nobody sees)."""
+    if sys.platform.startswith("linux") and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        return False
     try:
         if sys.platform == "darwin":
             subprocess.Popen(["open", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
