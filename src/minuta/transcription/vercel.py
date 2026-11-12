@@ -11,8 +11,10 @@ why `provider_options` below is tested per model.
 from __future__ import annotations
 
 import base64
-
-import requests
+import json
+import urllib.error
+import urllib.request
+from typing import TYPE_CHECKING
 
 from minuta.transcription.common import (
     WINDOW,
@@ -25,7 +27,13 @@ from minuta.transcription.common import (
     with_punctuation,
 )
 
+if TYPE_CHECKING:
+    import requests
+
 URL = "https://ai-gateway.vercel.sh/v4/ai/transcription-model"
+# Balance of the key's team. Reading it costs nothing, so the setup checks a key with it.
+CREDITS_URL = "https://ai-gateway.vercel.sh/v1/credits"
+KEYS_PAGE = "https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai-gateway%2Fapi-keys&title=AI+Gateway+API+Keys"
 KEY_NAME = "AI_GATEWAY_API_KEY"
 
 # Short names offered by the setup. Prices are estimates in US$ per minute of audio sent; the
@@ -131,10 +139,28 @@ def segments_from(response: dict, seconds: float) -> list[dict]:
     return segs
 
 
+def check_key(api_key: str, timeout: float = 10.0) -> tuple[str, str | None]:
+    """Is the key good, without spending? ("ok", balance in US$), ("invalid", None) when the gateway
+    refuses it, or ("unknown", reason) when it could not be asked (offline, the route changed)."""
+    req = urllib.request.Request(CREDITS_URL, headers={  # noqa: S310 - fixed https URL
+        "Authorization": f"Bearer {api_key}", "ai-gateway-protocol-version": "0.0.1",
+        "ai-gateway-auth-method": "api-key"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310
+            body = json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        return ("invalid", None) if e.code in (401, 403) else ("unknown", f"HTTP {e.code}")
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        return "unknown", str(getattr(e, "reason", e))
+    return "ok", str(body.get("balance")) if body.get("balance") is not None else None
+
+
 class VercelEngine:
     name = "vercel"
 
     def __init__(self, opts: dict, api_key: str | None, session: requests.Session | None = None):
+        import requests
+
         if not api_key:
             raise RuntimeError(f"{KEY_NAME} is not set: run `minuta setup` or store it with the keyring")
         self.opts = opts
@@ -172,11 +198,11 @@ class VercelEngine:
             timeout=600,
         )
 
-    def transcribe_channel(self, x, segments, tcfg: dict, budget=None, cost=None) -> list[dict]:
+    def transcribe_channel(self, x, segments, tcfg: dict, budget=None, cost=None, progress=None) -> list[dict]:
         def one(audio: bytes, sec: float) -> list[dict]:
             r = self.request(audio, tcfg)
             if budget is not None and cost is not None:
                 budget.adjust(cost(sec), real_cost(r))
             return segments_from(r, sec)
 
-        return by_windows(x, segments, one, maximum=self.window, budget=budget, cost=cost)
+        return by_windows(x, segments, one, maximum=self.window, budget=budget, cost=cost, progress=progress)

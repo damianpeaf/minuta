@@ -1,4 +1,7 @@
-"""The `minuta` command. Without arguments it opens a menu; every action also works with flags."""
+"""The `minuta` command. Without arguments it opens a menu; every action also works with flags.
+
+What each action does lives in `actions` (data); this module asks, prints and translates.
+"""
 
 from __future__ import annotations
 
@@ -12,11 +15,9 @@ import sys
 import time
 from pathlib import Path
 
-from minuta import __version__, client, credentials, pairing, paths
+from minuta import __version__, paths
 from minuta import config as config_mod
 from minuta.i18n import set_language, t
-from minuta.meetings import DISCARDED, MeetingStore
-from minuta.redact import redact, setup_logging
 
 DEFAULT_REPO = "https://github.com/damianpeaf/minuta"
 # The Python the installers (install.sh, install.ps1) give the tool environment, overridable with
@@ -25,6 +26,7 @@ DEFAULT_PYTHON = "3.12"
 # Left in the source folder by the installers: only such a folder may be replaced or reset.
 INSTALLER_MARKER = ".minuta-installer"
 _TAR_FILTER = {"filter": "data"} if hasattr(__import__("tarfile"), "data_filter") else {}
+DISCARDED = "discarded"
 
 
 # --- helpers -------------------------------------------------------------------------
@@ -39,22 +41,37 @@ def load_cfg(required: bool = True) -> dict | None:
     return cfg
 
 
-def store_for(cfg: dict) -> MeetingStore:
-    return MeetingStore(config_mod.meetings_dir(cfg))
-
-
-def router_for(cfg: dict):
-    from minuta.router import Router
-
-    return Router(cfg, credentials.store(cfg))
-
-
 def interactive(args) -> bool:
     return sys.stdin.isatty() and not getattr(args, "non_interactive", False)
 
 
-def fmt_minutes(sec) -> str:
-    return f"{round((sec or 0) / 60)} min" if sec else "-"
+def ask():
+    from minuta.setup import Prompter
+
+    return Prompter(True)
+
+
+def cli_logging(verbose: bool = False) -> None:
+    """Logs go to a file; the terminal gets messages written for people (or the log too, with --verbose)."""
+    from minuta.redact import setup_logging
+
+    setup_logging(logfile=paths.log_dir() / "cli.log", stream=verbose)
+
+
+def resolve_meeting(store, ref: str):
+    from minuta.meetings import MeetingLookupError
+
+    try:
+        return store.resolve(ref)
+    except MeetingLookupError as e:
+        from minuta import ui
+
+        ui.error(t(e.key, **e.kw))
+        return None
+
+
+def status_word(status: str | None) -> str:
+    return t(f"meeting.status.{status}") if status else "-"
 
 
 # --- commands ------------------------------------------------------------------------
@@ -70,6 +87,7 @@ def cmd_serve(args) -> int:
     signal.signal(signal.SIGTERM, _stop_on_sigterm)
     if args.home:
         os.environ["MINUTA_HOME"] = str(Path(args.home).expanduser())
+    from minuta.redact import setup_logging
     from minuta.service import pid_file
 
     try:
@@ -95,178 +113,372 @@ def cmd_status(args) -> int:
     cfg = load_cfg()
     if cfg is None:
         return 1
-    from minuta.service import ServiceManager
+    from minuta import actions, ui
 
-    port = int(cfg["server"]["port"])
-    svc = ServiceManager().status()
-    health = client.health(port)
-    st = client.status(port) if health else None
-    state = pairing.read_state()
-    store = store_for(cfg)
-    meetings = [m for m in store.all() if m.status != DISCARDED]
-    router = router_for(cfg)
-    failed = sum(1 for m in meetings if router.failed(m))
-    last_seen = (st or {}).get("last_seen") or state.get("last_seen")
-    out = {
-        "version": __version__,
-        "config": str(paths.config_file()),
-        "data": str(config_mod.data_dir(cfg)),
-        "service": {"installed": svc.installed, "running": svc.running, "detail": svc.detail},
-        "server": {"port": port, "answering": bool(health)},
-        "extension": {"paired": bool(state.get("allowed_origins")),
-                      "last_seen_seconds_ago": round(time.time() - last_seen) if last_seen else None},
-        "recording_now": (st or {}).get("recording", []),
-        "meetings": {"total": len(meetings), "without_transcript": sum(1 for m in meetings if not m.has_transcript()),
-                     "with_failed_delivery": failed},
-    }
     if args.json:
-        print(json.dumps(out, indent=2))
+        print(json.dumps(actions.status(cfg), indent=2))
         return 0
-    print(f"minuta {__version__}")
-    print(f"  config      {out['config']}")
-    print(f"  data        {out['data']}")
-    print(f"  service     {'installed' if svc.installed else 'not installed'}, {svc.detail or '-'}")
-    print(f"  server      127.0.0.1:{port} {'answering' if health else 'not answering'}")
-    seen = out["extension"]["last_seen_seconds_ago"]
-    print(f"  extension   {'paired' if out['extension']['paired'] else 'not paired'}"
-          f"{f', last seen {seen} s ago' if seen is not None else ''}")
-    if out["recording_now"]:
-        print(f"  recording   {', '.join(out['recording_now'])}")
-    m = out["meetings"]
-    print(f"  meetings    {m['total']} ({m['without_transcript']} without transcript, "
-          f"{m['with_failed_delivery']} with failed deliveries)")
+    with ui.step(t("status.checking")):
+        out = actions.status(cfg)
+    print_status(out)
     return 0
+
+
+def print_status(out: dict) -> None:
+    from minuta import ui
+
+    svc, srv, ext, m = out["service"], out["server"], out["extension"], out["meetings"]
+    yes = lambda good, text: ui.styled(text, "ok" if good else "warn")  # noqa: E731
+    service = t("status.service_running") if svc["running"] else (
+        t("status.service_stopped") if svc["installed"] else t("status.service_missing"))
+    server = t("status.server_up", port=srv["port"]) if srv["answering"] else t("status.server_down", port=srv["port"])
+    if ext["paired"]:
+        seen = ext["last_seen_seconds_ago"]
+        extension = t("status.ext_seen", ago=t("ago", what=ui.duration(max(1, seen)))) if seen is not None \
+            else t("status.ext_paired")
+    else:
+        extension = t("status.ext_unpaired")
+    rows = [
+        (t("status.version"), f"minuta {out['version']}"),
+        (t("status.service"), yes(svc["running"], service)),
+        (t("status.server"), yes(srv["answering"], server)),
+        (t("status.extension"), yes(ext["paired"], extension)),
+        (t("status.mode"), t(f"mode.{out['recording_mode']}")),
+    ]
+    if out["recording_now"]:
+        rows.append((t("status.recording"), t("status.recording_now", n=len(out["recording_now"]))))
+    rows += [
+        (t("status.meetings"), t("status.meetings_value", total=m["total"], pending=m["without_transcript"])),
+    ]
+    if m["with_failed_delivery"]:
+        rows.append((t("status.failed"), ui.styled(t("status.failed_value", n=m["with_failed_delivery"]), "fail")))
+    rows += [(t("status.data"), out["data"]), (t("status.config"), out["config"])]
+    ui.kv(rows)
 
 
 def cmd_list(args) -> int:
     cfg = load_cfg()
     if cfg is None:
         return 1
-    rows = []
-    for m in store_for(cfg).all():
-        d = m.read()
-        if d.get("status") == DISCARDED and not args.all:
-            continue
-        rows.append({"id": m.id, "title": m.title, "started_at": d.get("started_at"), "status": d.get("status"),
-                     "duration_seconds": d.get("duration_seconds"), "transcript": m.has_transcript(),
-                     "audio": m.audio_path is not None,
-                     "destinations": {k: {s: (v or {}).get("status") for s, v in (st or {}).items()}
-                                      for k, st in (d.get("destinations") or {}).items()}})
+    from minuta import actions, ui
+
+    rows = actions.meetings(cfg, include_discarded=args.all)
     if args.json:
+        for r in rows:
+            r.pop("code", None)  # same shape as before
         print(json.dumps(rows, indent=2, ensure_ascii=False))
         return 0
     if not rows:
-        print(t("list.empty"))
+        ui.say(t("list.empty"))
         return 0
+    rows = list(reversed(rows))  # newest first
+    short = actions.short_ids([r["id"] for r in rows], minimum=64 if args.verbose else 16)
+    table = []
     for r in rows:
-        tr = "transcript" if r["transcript"] else "no transcript"
-        failed = [f"{name}:{stage}" for name, stages in r["destinations"].items()
-                  for stage, status in stages.items() if status == "failed"]
-        print(f"{r['id']}  {(r['started_at'] or '')[:16]:16}  {fmt_minutes(r['duration_seconds']):>7}  "
-              f"{r['status'] or '-':10}  {tr:13}  {r['title']}"
-              + (f"  [failed: {', '.join(failed)}]" if failed else ""))
+        failed = [f"{name}" for name, stages in r["destinations"].items()
+                  for status in stages.values() if status == "failed"]
+        tr = ui.styled(t("list.transcribed"), "ok") if r["transcript"] else ui.styled(t("list.not_transcribed"), "dim")
+        state = status_word(r["status"])
+        if failed:
+            state += " · " + t("list.failed_to", names=", ".join(dict.fromkeys(failed)))
+        table.append([ui.when(r["started_at"]), r["title"], ui.duration(r["duration_seconds"]), state, tr,
+                      ui.styled(short[r["id"]], "dim")])
+    ui.table([t("list.col.when"), t("list.col.title"), t("list.col.duration"), t("list.col.status"),
+              t("list.col.transcript"), t("list.col.id")], table)
+    ui.say(t("list.hint"), style="dim")
     return 0
 
 
-def ask():
-    from minuta.setup import Prompter
+def _meeting_label(m) -> str:
+    from minuta import ui
 
-    return Prompter(True)
+    d = m.read()
+    tr = t("list.transcribed") if m.has_transcript() else t("list.not_transcribed")
+    return f"{ui.when(d.get('started_at'))}   {m.title}   ({ui.duration(d.get('duration_seconds'))}, {tr})"
 
 
-def _pick_meeting(store: MeetingStore) -> str | None:
-    meetings = [m for m in store.all() if m.status not in (DISCARDED, "recording")]
+def _pick_meeting(cfg: dict):
+    from minuta import actions, ui
+
+    meetings = actions.transcribable(cfg)
     if not meetings:
-        print(t("list.empty"))
+        ui.say(t("list.empty"))
         return None
-    choices = [(m.id, f"{m.id}  {m.title}{'' if m.has_transcript() else '  *'}") for m in reversed(meetings)]
-    return ask().select(t("transcribe.pick"), choices, choices[0][0])
+    choices = [(m.id, _meeting_label(m)) for m in meetings]
+    first = next((m.id for m in meetings if not m.has_transcript()), meetings[0].id)
+    return ask().select(t("transcribe.pick"), choices, first)
+
+
+def _engine_label(o: dict) -> str:
+    from minuta import ui
+
+    name = "local" if o["engine"] == "local" else o["model"]
+    model = f" ({o['model']})" if o["engine"] == "local" and o.get("model") else ""
+    when = t("transcribe.takes", time=ui.duration(o["seconds"])) if o.get("seconds") else ""
+    price = t("transcribe.up_to", usd=o["usd"]) if o["paid"] else t("transcribe.free")
+    extra = "" if o.get("available", True) else " - " + t("transcribe.not_installed")
+    return f"{name}{model}: {price}{', ' + when if when else ''}{extra}"
+
+
+def choose_engine(cfg: dict, meeting, args) -> tuple[str, str | None] | None:
+    """The engine and model to use: from --engine, or asked in a terminal with the time and price of each."""
+    from minuta import actions, ui
+
+    if args.engine:
+        return args.engine, None
+    if not interactive(args):
+        return cfg["transcription"]["engine"], None
+    with ui.step(t("transcribe.options")):
+        options = actions.engine_options(cfg, meeting)
+    usable = [o for o in options if o.get("available", True)] or options
+    if len(usable) == 1:
+        o = usable[0]
+        ui.say(t("transcribe.engine", engine=_engine_label(o)))
+        return o["engine"], o.get("model") if o["engine"] == "vercel" else None
+    choices = [(str(i), _engine_label(o)) for i, o in enumerate(usable)]
+    picked = usable[int(ask().select(t("transcribe.which_engine"), choices, "0"))]
+    return picked["engine"], picked.get("model") if picked["engine"] == "vercel" else None
+
+
+class TranscriptionView:
+    """Turns pipeline progress into lines: a finished step gets an 'ok' line, the current one a bar."""
+
+    LABELS = {"audio": "transcribe.step.audio", "model": "transcribe.step.model",
+              "download": "transcribe.step.download", "transcribe": "transcribe.step.transcribe",
+              "deliver": "transcribe.step.deliver"}
+    DONE = {"audio": "transcribe.done.audio", "model": "transcribe.done.model",
+            "download": "transcribe.done.download", "transcribe": "transcribe.done.transcribe",
+            "deliver": "transcribe.done.deliver"}
+
+    def __init__(self):
+        self.step = None
+        self.bar = None
+        self.info: dict = {}
+
+    def __call__(self, step: str, fraction, info: dict) -> None:
+        from minuta import ui
+
+        if step != self.step:
+            self.close()
+            if step == "done":
+                return
+            self.step, self.info = step, dict(info)
+            kw = self._kw(info)
+            self.bar = ui.Bar(t(self.LABELS.get(step, step), **kw), unit="bytes" if step == "download" else "")
+            self.bar.__enter__()
+        self.info.update(info)
+        if self.bar is not None and fraction is not None:
+            if step == "download" and info.get("total"):
+                self.bar.update(info.get("done", 0), info["total"])
+            else:
+                self.bar.update(round(fraction * 1000), 1000)
+
+    def _kw(self, info: dict) -> dict:
+        from minuta import ui
+
+        model = str(info.get("model") or info.get("engine") or "").rsplit("/", 1)[-1]
+        total = info.get("total")
+        size = f" ({total / 1e6:.0f} MB)" if self.step == "download" and total else ""
+        return {"model": model, "size": size, "speech": ui.duration(total) if total else "-"}
+
+    def close(self, failed: bool = False) -> None:
+        from minuta import ui
+
+        if self.bar is not None:
+            self.bar.__exit__(None, None, None)
+            self.bar = None
+            if not failed and self.step in self.DONE:
+                ui.ok(t(self.DONE[self.step], **self._kw(self.info)))
+        if failed:
+            self.step = None
 
 
 def cmd_transcribe(args) -> int:
     cfg = load_cfg()
     if cfg is None:
         return 1
+    from minuta import actions, ui
     from minuta.transcription import price_per_minute
     from minuta.transcription.budget import Budget, BudgetExceeded
-    from minuta.transcription.pipeline import estimate_run, transcribe
+    from minuta.transcription.pipeline import estimate_run
 
-    store = store_for(cfg)
+    cli_logging(getattr(args, "verbose", False))
+    store = actions.store_for(cfg)
     ref = args.meeting
     if ref is None:
-        ref = _pick_meeting(store) if interactive(args) else "latest"
+        ref = _pick_meeting(cfg) if interactive(args) else "latest"
         if ref is None:
             return 1
-    try:
-        meeting = store.resolve(ref)
-    except LookupError as e:
-        print(e, file=sys.stderr)
+    meeting = resolve_meeting(store, ref)
+    if meeting is None:
         return 1
     if meeting.has_transcript() and not args.force and not args.estimate:
-        print(t("transcribe.exists", id=meeting.id))
+        ui.say(t("transcribe.exists", title=meeting.title))
+        if interactive(args) and getattr(args, "from_menu", False):
+            offer_transcript(cfg, meeting)
         return 0
-    engine = args.engine or cfg["transcription"]["engine"]
+    picked = choose_engine(cfg, meeting, args)
+    if picked is None:
+        return 1
+    engine, model = picked
+    run_cfg = actions.with_engine(cfg, engine, model)
     window = None
     if args.from_min is not None or args.to_min is not None:
         window = ((args.from_min or 0) * 60, (args.to_min if args.to_min is not None else 10**6) * 60)
-    router = router_for(cfg)
     cap = float(args.max_usd if args.max_usd is not None else cfg["transcription"].get("max_usd") or 0)
     budget = None
-    if price_per_minute(engine, cfg) > 0:
-        est = estimate_run(meeting, cfg, engine, router=router, window=window)
-        print(t("transcribe.estimate", engine=engine, minutes=est["seconds"] / 60, usd=est["usd"]))
+    if price_per_minute(engine, run_cfg) > 0:
+        with ui.step(t("transcribe.measuring")):
+            est = estimate_run(meeting, run_cfg, engine, router=actions.router_for(cfg), window=window)
+        ui.say(t("transcribe.estimate", engine=model or engine, minutes=est["seconds"] / 60, usd=est["usd"]))
         if args.estimate:
             return 0
         if est["usd"] > cap:
-            print(t("transcribe.over_cap", cap=cap))
+            ui.error(t("transcribe.over_cap", cap=cap))
             return 3
         if not args.yes:
             if not interactive(args):
-                print(t("transcribe.need_yes"))
+                ui.error(t("transcribe.need_yes"))
                 return 3
             if not ask().confirm(t("transcribe.confirm", usd=est["usd"]), False):
-                print(t("transcribe.cancelled"))
+                ui.say(t("transcribe.cancelled"))
                 return 1
         budget = Budget(cap)
     elif args.estimate:
-        print(t("transcribe.estimate", engine=engine, minutes=0.0, usd=0.0))
+        ui.say(t("transcribe.estimate", engine=engine, minutes=0.0, usd=0.0))
         return 0
-    setup_logging()
+    view = TranscriptionView()
     try:
-        transcribe(meeting, cfg, engine, router=router, secrets=credentials.store(cfg), budget=budget, window=window)
+        summary = actions.transcribe(run_cfg, meeting, engine, budget=budget, window=window, on_progress=view)
     except BudgetExceeded as e:
-        print(e, file=sys.stderr)
+        view.close(failed=True)
+        ui.error(str(e))
         return 3
-    print(t("transcribe.done", path=meeting.dir / "transcript.md"))
+    except Exception as e:
+        view.close(failed=True)
+        ui.fail(t("transcribe.failed", error=str(e)[:300]))
+        ui.say(t("see_log", path=paths.log_dir() / "cli.log"), style="dim")
+        return 1
+    view.close()
+    print_summary(summary)
+    if interactive(args) and getattr(args, "from_menu", False):
+        offer_transcript(cfg, meeting)
     return 0
+
+
+def print_summary(s: dict) -> None:
+    from minuta import ui
+
+    ui.blank()
+    ui.markup(f"[head]{ui.esc(t('summary.title', title=s['title']))}[/]  [dim]{ui.esc(ui.when(s['started_at']))}[/]")
+    speakers = ", ".join(t("summary.turns" if v != 1 else "summary.turn", name=k, n=v)
+                         for k, v in s["speakers"].items()) or t("summary.nobody")
+    rows: list = [(t("summary.duration"), ui.duration(s["duration_seconds"])), (t("summary.speakers"), speakers)]
+    engine = s.get("engine") or {}
+    model = str(engine.get("model") or "").rsplit("/", 1)[-1]
+    rows.append((t("summary.engine"), f"{engine.get('name')} ({model})" if model else str(engine.get("name"))))
+    if s.get("cost_usd"):
+        rows.append((t("summary.cost"), f"US${s['cost_usd']:.4f}"))
+    for i, f in enumerate(s["files"]):
+        label = t("summary.file") if i == 0 else t("summary.also")
+        where = t("summary.in_destination", name=f["destination"]) if f["destination"] else t("summary.in_data")
+        rows.append((label, _link(f["path"], where)))
+    for d in s["deliveries"]:
+        good = d["status"] == "ok"
+        text = f"{t('mark.ok') if good else t('mark.fail')}  {d['destination']}"
+        if not good and d.get("error"):
+            text += f": {d['error']}"
+        rows.append((t("summary.delivery"), ui.styled(text, "ok" if good else "fail")))
+    ui.kv(rows)
+    if s["preview"]:
+        ui.blank()
+        ui.say(t("summary.preview"), style="dim")
+        for turn in s["preview"]:
+            ui.markup(f"  [dim]{ui.clock(turn['start'])}[/]  [accent]{ui.esc(turn['speaker'])}[/]: "
+                      f"{ui.esc(_cut(turn['text'], 160))}")
+
+
+def _link(path: str, note: str):
+    from rich.text import Text
+
+    from minuta import ui
+
+    text = Text.from_markup(ui.path_markup(path))
+    text.append(f"  ({note})", style="dim")
+    return text
+
+
+def _cut(text: str, n: int) -> str:
+    return text if len(text) <= n else text[: n - 3].rstrip() + "..."
+
+
+def offer_transcript(cfg: dict, meeting) -> None:
+    """After transcribing from the menu: open the transcript, show it here, or go back."""
+    from minuta import actions, ui
+
+    files = actions.transcript_locations(cfg, meeting)
+    if not files:
+        return
+    choice = ask().select(t("summary.next"), [("open", t("summary.open")), ("show", t("summary.show")),
+                                              ("back", t("summary.back"))], "open")
+    if choice == "open":
+        if ui.open_with_system(Path(files[0]["path"])):
+            ui.ok(t("summary.opened", path=files[0]["path"]))
+        else:
+            ui.warn(t("summary.cannot_open", path=files[0]["path"]))
+    elif choice == "show":
+        doc = json.loads((meeting.dir / "transcript.json").read_text(encoding="utf-8"))
+        ui.blank()
+        for turn in doc.get("turns") or []:
+            ui.markup(f"[dim]{ui.clock(turn['start'])}[/]  [accent]{ui.esc(turn['speaker'])}[/]: "
+                      f"{ui.esc(turn['text'])}")
+
+
+PARTS_KEYS = {"audio": "part.audio", "transcript": "part.transcript", "metadata": "part.metadata"}
 
 
 def cmd_destinations(args) -> int:
     cfg = load_cfg()
     if cfg is None:
         return 1
+    from minuta import actions, ui
     from minuta import destinations as reg
+    from minuta.redact import redact
 
     dests = cfg.setdefault("destinations", {})
     action = args.action or "list"
     if action == "list":
-        kinds = reg.registry()
         if args.json:
+            kinds = reg.registry()
             print(json.dumps({"configured": dests, "types": sorted(kinds)}, indent=2))
             return 0
-        for name, opts in dests.items():
-            state = "enabled" if opts.get("enabled", True) else "disabled"
-            extra = {k: v for k, v in opts.items() if k not in ("type", "enabled", "send")}
-            print(f"{name:12} {opts.get('type'):10} {state:9} sends {','.join(opts.get('send') or [])}  {extra or ''}")
-        print("available types: " + ", ".join(f"{k} ({c.describe()})" for k, c in sorted(kinds.items())))
+        data = actions.destinations(cfg)
+        rows = []
+        for d in data["configured"]:
+            state = ui.styled(t("dest.enabled"), "ok") if d["enabled"] else ui.styled(t("dest.disabled"), "dim")
+            sends = ", ".join(t(PARTS_KEYS.get(p, p)) for p in d["send"])
+            where = d["target"] or (t("dest.data_folder") if d["type"] == "local" else "-")
+            rows.append([d["name"], d["type"], state, sends, where])
+        if rows:
+            ui.table([t("dest.col.name"), t("dest.col.type"), t("dest.col.state"), t("dest.col.sends"),
+                      t("dest.col.where")], rows)
+        else:
+            ui.say(t("dest.none"))
+        ui.blank()
+        ui.say(t("dest.types"))
+        width = max(len(x["type"]) for x in data["types"])
+        for x in data["types"]:
+            ui.say(f"  {x['type']:<{width}}  {_type_text(x['type'], x['description'])}")
+        ui.blank()
+        ui.say(t("dest.add_hint"), style="dim")
         return 0
     if not args.name:
-        print("a destination name is required", file=sys.stderr)
+        ui.error(t("dest.name_required"))
         return 2
     if action == "add":
         kind = args.type or args.name
         if kind not in reg.registry():
-            print(f"unknown type {kind!r}; available: {', '.join(sorted(reg.registry()))}", file=sys.stderr)
+            ui.error(t("dest.unknown_type", kind=kind, known=", ".join(sorted(reg.registry()))))
             return 2
         from minuta.setup import Cancelled, Prompter, add_destination, parse_options
 
@@ -274,85 +486,107 @@ def cmd_destinations(args) -> int:
             opts = parse_options(args.option)
             if args.send:
                 opts["send"] = args.send
-            ok, message = add_destination(cfg, args.name, kind, opts, Prompter(True) if interactive(args) else None,
-                                          force=args.force)
+            with ui.step(t("dest.checking", name=args.name)) if not interactive(args) else _nothing():
+                ok, message = add_destination(cfg, args.name, kind, opts,
+                                              Prompter(True) if interactive(args) else None, force=args.force)
         except KeyboardInterrupt:
             print()
             return 130
         except Cancelled:
-            print(f"{args.name}: not added", file=sys.stderr)
+            ui.error(t("dest.not_added", name=args.name))
             return 1
         except ValueError as e:
-            print(e, file=sys.stderr)
+            ui.error(str(e))
             return 2
         if not ok:
-            print(redact(f"{args.name}: {message} (use --force to save anyway)"), file=sys.stderr)
+            ui.error(redact(t("dest.check_failed", name=args.name, message=message)))
             return 1
         config_mod.save(cfg)
-        print(redact(f"{args.name}: added. {message}"))
+        ui.ok(redact(t("dest.added", name=args.name, message=message)))
         return 0
     if args.name not in dests:
-        print(f"no destination named {args.name!r}", file=sys.stderr)
+        ui.error(t("dest.no_such", name=args.name))
         return 1
+    from minuta import credentials
+
     if action == "remove":
         reg.forget_secrets(dests.pop(args.name), credentials.store(cfg))
         config_mod.save(cfg)
-        print(f"{args.name}: removed")
+        ui.ok(t("dest.removed", name=args.name))
         return 0
     if action in ("enable", "disable"):
         dests[args.name]["enabled"] = action == "enable"
         config_mod.save(cfg)
-        print(f"{args.name}: {action}d")
+        ui.ok(t(f"dest.{action}_done", name=args.name))
         return 0
     if action == "test":
         try:
-            dest = reg.create(args.name, dests[args.name], credentials.store(cfg))
-            check = dest.check()
+            with ui.step(t("dest.testing", name=args.name)):
+                dest = reg.create(args.name, dests[args.name], credentials.store(cfg))
+                check = dest.check()
         except Exception as e:  # noqa: BLE001
-            print(f"{args.name}: {redact(str(e))}")
+            ui.fail(f"{args.name}: {redact(str(e))}")
             return 1
-        print(f"{args.name}: {'ok' if check.ok else 'problem'} {check.message}")
+        (ui.ok if check.ok else ui.fail)(f"{args.name}: {check.message}")
         if not check.ok or not args.live:
             return 0 if check.ok else 1
         ping = getattr(dest, "ping", None)
         if ping is None:
-            print(f"{args.name}: {dests[args.name].get('type')} has no live test")
+            ui.say(t("dest.no_live", name=args.name, kind=dests[args.name].get("type")))
             return 0
         try:
-            receipt = ping()
+            with ui.step(t("dest.live", name=args.name)):
+                receipt = ping()
         except Exception as e:  # noqa: BLE001
-            print(f"{args.name}: live test failed: {redact(str(e))}")
+            ui.fail(t("dest.live_failed", name=args.name, error=redact(str(e))))
             return 1
-        print(f"{args.name}: live test ok {receipt.url or ''}".rstrip())
+        ui.ok(t("dest.live_ok", name=args.name, url=receipt.url or "").rstrip())
         return 0
     return 2
+
+
+class _nothing:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _type_text(kind: str, description: str) -> str:
+    key = f"dest.type.{kind}"
+    from minuta.i18n import STRINGS
+
+    return t(key) if key in STRINGS else description
 
 
 def cmd_retry(args) -> int:
     cfg = load_cfg()
     if cfg is None:
         return 1
-    setup_logging()
-    store = store_for(cfg)
-    router = router_for(cfg)
-    if args.meetings:
-        try:
-            targets = [store.resolve(r) for r in args.meetings]
-        except LookupError as e:
-            print(e, file=sys.stderr)
-            return 1
-    else:
-        targets = [m for m in store.all() if m.status == "ready" and router.needs_delivery(m)]
+    from minuta import actions, ui
+    from minuta.meetings import MeetingLookupError
+
+    cli_logging(getattr(args, "verbose", False))
+    try:
+        targets = actions.retry_targets(cfg, args.meetings)
+    except MeetingLookupError as e:
+        ui.error(t(e.key, **e.kw))
+        return 1
     if not targets:
-        print(t("retry.none"))
+        ui.say(t("retry.none"))
         return 0
+    with ui.Bar(t("retry.sending", n=len(targets))) as bar:
+        rows = actions.retry(cfg, targets, on_progress=lambda step, f, info: bar.update(f or 0, 1))
     worst = 0
-    for m in targets:
-        results = router.retry(m)
-        for key, st in results.items():
-            print(f"{m.id}  {key:24} {st.get('status')}  {st.get('error') or ''}")
-            if st.get("status") == "failed":
-                worst = 1
+    table = []
+    for r in rows:
+        good = r["status"] in ("ok", "skipped")
+        worst = worst or (0 if good else 1)
+        mark = ui.styled(t("mark.ok") if good else t("mark.fail"), "ok" if good else "fail")
+        table.append([mark, r["title"], r["destination"], t(f"stage.{r['stage']}"), r.get("error") or ""])
+    ui.table(["", t("retry.col.meeting"), t("retry.col.destination"), t("retry.col.stage"), t("retry.col.error")],
+             table)
     return worst
 
 
@@ -360,15 +594,21 @@ def cmd_pair(args) -> int:
     cfg = load_cfg()
     if cfg is None:
         return 1
+    from minuta import browser, pairing, ui
+
     if args.rotate:
         pairing.rotate_token()
+        ui.ok(t("pair.rotated"))
     code = pairing.new_code()
-    print(t("pair.code", code=code))
+    ui.markup(f"{ui.esc(t('pair.code_label'))}  [bold accent]{code}[/]  [dim]{ui.esc(t('pair.valid'))}[/]")
+    ui.say(t("pair.where"))
+    ui.markup("  " + ui.path_markup(browser.extension_dir(cfg)))
     if args.wait:
         from minuta.setup import wait_for_extension
 
-        ok = wait_for_extension(int(cfg["server"]["port"]), args.wait, time.time() - 1)
-        print(t("setup.ext_ok") if ok else t("setup.ext_timeout"))
+        with ui.step(t("setup.waiting_ext", seconds=args.wait)):
+            ok = wait_for_extension(int(cfg["server"]["port"]), args.wait, time.time() - 1)
+        (ui.ok if ok else ui.warn)(t("setup.ext_ok") if ok else t("setup.ext_timeout"))
         return 0 if ok else 1
     return 0
 
@@ -380,30 +620,69 @@ def cmd_doctor(args) -> int:
     return doctor.run(cfg, as_json=args.json)
 
 
+def cmd_mode(args) -> int:
+    cfg = load_cfg()
+    if cfg is None:
+        return 1
+    from minuta import actions, ui
+
+    mode = args.mode
+    if mode is None:
+        current = actions.recording_mode(cfg)
+        if not interactive(args):
+            ui.say(t("mode.current", mode=t(f"mode.{current}")))
+            return 0
+        mode = ask().select(t("mode.question"), [(m, t(f"mode.{m}.long")) for m in actions.RECORDING_MODES], current)
+    actions.set_recording_mode(mode)
+    ui.ok(t("mode.saved", mode=t(f"mode.{mode}")))
+    ui.say(t(f"mode.{mode}.long"), style="dim")
+    return 0
+
+
+def _quiet(argv: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess:
+    """Run a step without filling the terminal; its output is shown only when it fails."""
+    return subprocess.run(argv, text=True, capture_output=True, cwd=cwd)
+
+
+def _show_failure(r: subprocess.CompletedProcess) -> None:
+    from minuta import ui
+
+    tail = "\n".join(((r.stderr or "") + (r.stdout or "")).strip().splitlines()[-15:])
+    if tail:
+        ui.say(tail, style="dim")
+
+
 def cmd_update(args) -> int:
     cfg = load_cfg()
     if cfg is None:
         return 1
+    from minuta import browser, ui
+
     g = cfg["general"]
     app_dir = g.get("app_dir")
     if not app_dir or not Path(app_dir).exists():
-        print(t("update.no_source"))
+        ui.error(t("update.no_source"))
         return 1
     app = Path(app_dir)
     ref = g.get("install_ref") or ""
-    if (app / ".git").exists():
-        code = _git_update(app, ref)
-        if code != 0:
-            return code
-    else:
-        try:
-            _download_tarball(os.environ.get("MINUTA_REPO_URL", DEFAULT_REPO), ref, app)
-        except (OSError, ValueError) as e:
-            print(f"update: {e}", file=sys.stderr)
-            return 1
+    with ui.step(t("update.fetching")):
+        if (app / ".git").exists():
+            r = _git_update(app, ref)
+            if r.returncode != 0:
+                ui.fail(t("update.fetch_failed"))
+                _show_failure(r)
+                return r.returncode
+        else:
+            try:
+                _download_tarball(os.environ.get("MINUTA_REPO_URL", DEFAULT_REPO), ref, app)
+            except (OSError, ValueError) as e:
+                ui.fail(t("update.fetch_failed"))
+                ui.error(str(e))
+                return 1
+    ui.ok(t("update.fetched"))
     uv = shutil.which("uv")
     if not uv:
-        print("uv is not installed", file=sys.stderr)
+        ui.error(t("update.no_uv"))
         return 1
     extras = g.get("install_extras", "local")
     spec = f".[{extras}]" if extras else "."
@@ -412,30 +691,43 @@ def cmd_update(args) -> int:
     if (app / "constraints.txt").exists():  # the versions pinned in uv.lock
         argv += ["--constraints", "constraints.txt"]
     # Relative paths from inside the checkout: uv splits a --constraints path at spaces.
-    r = subprocess.run([*argv, spec], text=True, cwd=app)
+    with ui.step(t("update.installing")):
+        r = _quiet([*argv, spec], cwd=app)
     if r.returncode != 0:
+        ui.fail(t("update.install_failed"))
+        _show_failure(r)
         return r.returncode
+    ui.ok(t("update.installed"))
+    ext = browser.sync_extension(cfg)
+    if ext.copied:
+        ui.ok(t("update.extension_synced", path=ext.folder))
+    if ext.old_folder_in_use:
+        ui.warn(t("update.extension_moved", new=ext.folder, old=ext.old_folder))
     if not args.no_restart:
         from minuta.service import ServiceManager
 
         mgr = ServiceManager()
         if mgr.status().installed:
-            mgr.restart()
-    print(t("update.done"))
+            with ui.step(t("update.restarting")):
+                mgr.restart()
+            ui.ok(t("update.restarted"))
+    ui.blank()
+    ui.say(t("update.done"))
     return 0
 
 
-def _git_update(app: Path, ref: str) -> int:
+def _git_update(app: Path, ref: str) -> subprocess.CompletedProcess:
     """The installers' checkout follows the branch or tag it was installed from (a tag leaves HEAD
     detached). A checkout without the installer's marker is the user's own: only fast-forwarded."""
     git = ["git", "-C", str(app)]
     if not (app / INSTALLER_MARKER).exists():
-        return subprocess.run([*git, "pull", "--ff-only"], text=True).returncode
+        return _quiet([*git, "pull", "--ff-only"])
+    r = None
     for step in (["fetch", "--depth", "1", "origin", ref or "HEAD"], ["reset", "--hard", "FETCH_HEAD"]):
-        r = subprocess.run([*git, *step], text=True)
+        r = _quiet([*git, *step])
         if r.returncode != 0:
-            return r.returncode
-    return 0
+            return r
+    return r
 
 
 def _download_tarball(repo: str, ref: str, dest: Path) -> None:
@@ -472,15 +764,20 @@ def _download_tarball(repo: str, ref: str, dest: Path) -> None:
         shutil.rmtree(old, ignore_errors=True)
 
 
+
 def cmd_uninstall(args) -> int:
     cfg = config_mod.load()
     set_language(cfg["general"].get("language"))
+    from minuta import browser, credentials, ui
+
     asking = interactive(args) and not args.yes
     if asking and not ask().confirm(t("uninstall.confirm"), False):
         return 1
     from minuta.service import ServiceManager
 
-    ServiceManager().uninstall()
+    with ui.step(t("uninstall.service")):
+        ServiceManager().uninstall()
+    ui.ok(t("uninstall.service_done"))
     data = config_mod.data_dir(cfg)
     delete_data = args.delete_data
     if delete_data is None:
@@ -492,11 +789,15 @@ def cmd_uninstall(args) -> int:
     store.delete(KEY_NAME)
     for opts in (cfg.get("destinations") or {}).values():
         forget_secrets(opts, store)
+    ui.ok(t("uninstall.secrets_done"))
     _remove_config(keep=[config_mod.meetings_dir(cfg), Path(cfg['general'].get('app_dir') or paths.default_app_dir())])
     logs = paths.log_dir()
     paths.remove_tree(logs)
     if logs.parent.name == "minuta" and logs.parent.exists() and not any(logs.parent.iterdir()):
         logs.parent.rmdir()
+    ui.ok(t("uninstall.config_done"))
+    if browser.remove_extension_copy(cfg):
+        ui.ok(t("uninstall.extension_done", path=browser.extension_copy_dir(cfg)))
     leftovers: list[Path] = []
     if delete_data:
         paths.remove_tree(data)
@@ -505,8 +806,9 @@ def cmd_uninstall(args) -> int:
         if default.exists() and not any(p for p in default.iterdir() if p.name != "app"):
             paths.remove_tree(default)
             leftovers.append(default)
+        ui.ok(t("uninstall.data_done", path=data))
     else:
-        print(t("uninstall.kept", path=data))
+        ui.ok(t("uninstall.kept", path=data))
     app_dir = cfg["general"].get("app_dir")
     if app_dir and (Path(app_dir) / INSTALLER_MARKER).exists():
         paths.remove_tree(Path(app_dir))
@@ -515,8 +817,10 @@ def cmd_uninstall(args) -> int:
         if d.exists() and not any(d.iterdir()):
             d.rmdir()
     if not args.keep_tool:
-        _uninstall_tool([d for d in leftovers if d.exists()])
-    print(t("uninstall.done"))
+        with ui.step(t("uninstall.tool")):
+            _uninstall_tool([d for d in leftovers if d.exists()])
+    ui.blank()
+    ui.say(t("uninstall.done"))
     return 0
 
 
@@ -625,31 +929,80 @@ def start_detached_powershell(script: Path) -> bool:
     return r.returncode == 0
 
 
+
 def cmd_service(args) -> int:
+    from minuta import ui
     from minuta.service import ServiceManager
 
     mgr = ServiceManager()
     action = args.action
+    with ui.step(t(f"service.doing.{action}")):
+        if action == "install":
+            where = mgr.install()
+        elif action == "uninstall":
+            mgr.uninstall()
+        elif action == "start":
+            mgr.start()
+        elif action == "stop":
+            mgr.stop()
+        elif action == "restart":
+            mgr.restart()
+        st = mgr.status()
+        if action in ("start", "stop", "restart"):
+            # launchctl returns before the job changes state: give it a moment before reporting.
+            end = time.time() + 5
+            while st.running != (action != "stop") and time.time() < end:
+                time.sleep(0.2)
+                st = mgr.status()
     if action == "install":
-        print(mgr.install())
-    elif action == "uninstall":
-        mgr.uninstall()
-    elif action == "start":
-        mgr.start()
-    elif action == "stop":
-        mgr.stop()
-    elif action == "restart":
-        mgr.restart()
-    st = mgr.status()
-    if action in ("start", "stop", "restart"):
-        # launchctl returns before the job changes state: give it a moment before reporting.
-        end = time.time() + 5
-        while st.running != (action != "stop") and time.time() < end:
-            time.sleep(0.2)
-            st = mgr.status()
-    print(f"service: {'installed' if st.installed else 'not installed'}, {'running' if st.running else 'stopped'}"
-          f" ({st.detail or '-'})")
+        ui.ok(t("setup.service_installed", where=where))
+    state = t("status.service_running") if st.running else (
+        t("status.service_stopped") if st.installed else t("status.service_missing"))
+    (ui.ok if st.running or action in ("stop", "uninstall") else ui.warn)(t("service.state", state=state))
     return 0
+
+
+def cmd_engine(args) -> int:
+    cfg = load_cfg()
+    if cfg is None:
+        return 1
+    from minuta import setup, ui
+
+    try:
+        api_key = setup.engine_step(cfg, args, setup.Prompter(interactive(args)))
+    except KeyboardInterrupt:
+        print()
+        return 130
+    config_mod.save(cfg)
+    setup.store_api_key(cfg, api_key)
+    tr = cfg["transcription"]
+    name = tr["engine"] if tr["engine"] == "local" else tr["vercel"]["model"]
+    ui.ok(t("engine.saved", engine=name))
+    return 0
+
+
+MENU = [("status", ["status"]), ("list", ["list"]), ("transcribe", ["transcribe"]),
+        ("destinations", ["destinations", "list"]), ("mode", ["mode"]), ("engine", ["engine"]),
+        ("retry", ["retry"]), ("doctor", ["doctor"]), ("pair", ["pair"]), ("setup", ["setup"]),
+        ("update", ["update"])]
+
+
+def menu_header(cfg: dict) -> str:
+    """One line: version, whether the server answers, the extension, meetings left to transcribe.
+    Only cheap checks, so the menu opens at once."""
+    from minuta import actions, client, pairing, ui
+
+    port = int(cfg["server"]["port"])
+    up = bool(client.health(port, timeout=0.5))
+    state = pairing.read_state()
+    pending = sum(1 for m in actions.transcribable(cfg) if not m.has_transcript())
+    paired = bool(state.get("allowed_origins"))
+    parts = [f"[head]minuta[/] [dim]{__version__}[/]",
+             f"[ok]{ui.esc(t('header.on'))}[/]" if up else f"[fail]{ui.esc(t('header.off'))}[/]",
+             ui.esc(t("header.paired")) if paired else f"[warn]{ui.esc(t('header.unpaired'))}[/]",
+             ui.esc(t(f"mode.{actions.recording_mode(cfg)}")),
+             ui.esc(t("header.pending", n=pending)) if pending else ui.esc(t("header.all_done"))]
+    return "  ·  ".join(parts)
 
 
 def cmd_menu(_args) -> int:
@@ -658,21 +1011,31 @@ def cmd_menu(_args) -> int:
         ns = build_parser().parse_args(["setup"])
         return cmd_setup(ns)
     set_language((cfg or {}).get("general", {}).get("language"))
-    actions = [("status", ["status"]), ("list", ["list"]), ("transcribe", ["transcribe"]),
-               ("destinations", ["destinations", "list"]), ("retry", ["retry"]), ("doctor", ["doctor"]),
-               ("pair", ["pair"]), ("setup", ["setup"]), ("update", ["update"])]
-    choices = [(k, t(f"menu.{k}")) for k, _ in actions] + [("quit", t("menu.quit"))]
+    from minuta import ui
+
+    ui.markup(menu_header(cfg))
+    choices = [(k, t(f"menu.{k}")) for k, _ in MENU] + [("quit", t("menu.quit"))]
+    last = "status"
     while True:
+        ui.blank()
         try:
-            choice = ask().select(t("menu.title"), choices, "status")
+            choice = ask().select(t("menu.title"), choices, last)
         except KeyboardInterrupt:
             return 0
         if choice == "quit":
             return 0
-        argv = dict(actions)[choice]
-        ns = build_parser().parse_args(argv)
-        ns.func(ns)
-        print()
+        last = choice
+        ui.rule(t(f"menu.{choice}"))
+        ns = build_parser().parse_args(dict(MENU)[choice])
+        ns.from_menu = True
+        try:
+            ns.func(ns)
+        except KeyboardInterrupt:
+            ui.blank()
+            ui.say(t("menu.interrupted"), style="dim")
+        if choice == "setup":
+            cfg = load_cfg(required=False) or cfg
+            choices = [(k, t(f"menu.{k}")) for k, _ in MENU] + [("quit", t("menu.quit"))]
 
 
 # --- parser --------------------------------------------------------------------------
@@ -704,6 +1067,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--api-key-env", help="read the Vercel AI Gateway key from this environment variable")
     s.add_argument("--max-usd", type=float)
     s.add_argument("--transcription-mode", choices=["on-demand", "auto"])
+    s.add_argument("--recording-mode", choices=["auto", "ask", "manual"],
+                   help="auto: record every call; ask: ask in the browser; manual: only from the popup")
+    s.add_argument("--extension-dir", help="where to keep the browser extension folder (default: ~/minuta-extension)")
     s.add_argument("--transcription-language")
     s.add_argument("--port", type=int)
     s.add_argument("--app-dir", help="source checkout used by `minuta update` (set by the installers)")
@@ -732,6 +1098,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("list", help="list meetings")
     s.add_argument("--json", action="store_true")
     s.add_argument("--all", action="store_true", help="include discarded meetings")
+    s.add_argument("--verbose", action="store_true", help="show the full meeting ids")
     s.set_defaults(func=cmd_list)
 
     s = sub.add_parser("transcribe", help="transcribe a meeting")
@@ -744,6 +1111,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--to", dest="to_min", type=float, metavar="MIN", help="stop at this minute")
     s.add_argument("--force", action="store_true", help="transcribe again")
     s.add_argument("--non-interactive", action="store_true")
+    s.add_argument("--verbose", action="store_true", help="also print the log")
     s.set_defaults(func=cmd_transcribe)
 
     s = sub.add_parser("destinations", help="list, add, test or remove destinations")
@@ -760,7 +1128,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("retry", help="retry failed deliveries")
     s.add_argument("meetings", nargs="*")
+    s.add_argument("--verbose", action="store_true", help="also print the log")
     s.set_defaults(func=cmd_retry)
+
+    s = sub.add_parser("mode", help="when the extension records: auto, ask or manual")
+    s.add_argument("mode", nargs="?", choices=["auto", "ask", "manual"])
+    s.add_argument("--non-interactive", action="store_true")
+    s.set_defaults(func=cmd_mode)
+
+    s = sub.add_parser("engine", help="choose the transcription engine (local or Vercel AI Gateway)")
+    s.add_argument("--engine", choices=["local", "vercel"])
+    s.add_argument("--vercel-model")
+    s.add_argument("--local-model")
+    s.add_argument("--api-key-env", help="read the Vercel AI Gateway key from this environment variable")
+    s.add_argument("--max-usd", type=float)
+    s.add_argument("--non-interactive", action="store_true")
+    s.set_defaults(func=cmd_engine)
 
     s = sub.add_parser("pair", help="new pairing code for the browser extension")
     s.add_argument("--wait", type=int, metavar="SECONDS")

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import getpass
 import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -11,6 +13,37 @@ from minuta import browser, client, credentials, pairing
 from minuta import config as config_mod
 from minuta.i18n import STRINGS, set_language, t
 from minuta.service import ServiceManager
+
+
+def full_name() -> str:
+    """The user's full name from the system (macOS `id -F`, the GECOS field on Linux, the display name
+    on Windows), or else the login name."""
+    name = ""
+    try:
+        if sys.platform == "darwin":
+            r = subprocess.run(["id", "-F"], capture_output=True, text=True, timeout=5)
+            name = r.stdout.strip() if r.returncode == 0 else ""
+        elif os.name == "nt":
+            name = _windows_display_name()
+        else:
+            import pwd
+
+            name = pwd.getpwuid(os.getuid()).pw_gecos.split(",")[0].strip()
+    except (OSError, KeyError, subprocess.SubprocessError, ImportError):
+        name = ""
+    return name or getpass.getuser() or "Me"
+
+
+def _windows_display_name() -> str:
+    import ctypes
+
+    size = ctypes.c_ulong(0)
+    secur32 = ctypes.windll.secur32  # type: ignore[attr-defined]
+    secur32.GetUserNameExW(3, None, ctypes.byref(size))  # 3 = NameDisplay
+    if not size.value:
+        return ""
+    buf = ctypes.create_unicode_buffer(size.value)
+    return buf.value if secur32.GetUserNameExW(3, buf, ctypes.byref(size)) else ""
 
 
 class Prompter:
@@ -43,7 +76,11 @@ class Prompter:
         return self._ask("path", message, default, default=default, only_directories=True)
 
     def confirm(self, message: str, default: bool) -> bool:
-        return bool(self._ask("confirm", message, default, default=default))
+        """Yes or no, in the CLI's language (questionary's own confirm always says Yes/No)."""
+        if not self.interactive:
+            return default
+        choices = [("yes", t("answer.yes")), ("no", t("answer.no"))]
+        return self.select(message, choices, "yes" if default else "no") == "yes"
 
     def password(self, message: str) -> str:
         return self._ask("password", message, "")
@@ -73,12 +110,16 @@ def build_config(args, p: Prompter) -> tuple[dict, str | None]:
     lang = args.language or p.select(t("setup.language"), [("en", "English"), ("es", "Español")], g["language"])
     g["language"] = lang
     set_language(lang)
-    print(t("setup.welcome"))
+    from minuta import ui
 
-    default_name = cfg["speakers"].get("me") if cfg["speakers"].get("me") != "Me" else (getpass.getuser() or "Me")
+    ui.say(t("setup.welcome"))
+
+    default_name = cfg["speakers"].get("me") if cfg["speakers"].get("me") != "Me" else full_name()
     cfg["speakers"]["me"] = args.name or p.text(t("setup.name"), default_name) or "Me"
     if args.others_name:
         cfg["speakers"]["others"] = args.others_name
+    elif cfg["speakers"].get("others") in ("Others", "Otros"):
+        cfg["speakers"]["others"] = t("setup.others")
 
     data_default = str(config_mod.data_dir(cfg))
     data = args.data_dir or p.path(t("setup.data_dir"), data_default)
@@ -92,7 +133,7 @@ def build_config(args, p: Prompter) -> tuple[dict, str | None]:
     if p.interactive and (cfg["destinations"].get("local") or {}).get("type") == "local":
         ok, message = add_destination(cfg, "local", "local", {}, p, keep_existing=True)  # asks for copy_to
         if not ok:
-            print(t("setup.dest_failed", name="local", error=message))
+            ui.warn(t("setup.dest_failed", name="local", error=message))
     if args.delete_audio_after_upload is not None:
         cfg["storage"]["delete_local_audio_after_upload"] = bool(args.delete_audio_after_upload)
     elif (cfg["destinations"].get("local") or {}).get("copy_to"):
@@ -100,38 +141,18 @@ def build_config(args, p: Prompter) -> tuple[dict, str | None]:
             t("setup.delete_after"), cfg["storage"]["delete_local_audio_after_upload"])
 
     tr = cfg["transcription"]
-    engine = args.engine or p.select(t("setup.engine"), [("local", t("setup.engine.local")),
-                                                         ("vercel", t("setup.engine.vercel"))], tr["engine"])
-    tr["engine"] = engine
-    if args.local_model:
-        tr["local"]["model"] = args.local_model
-    api_key = None
-    if engine == "vercel":
-        from minuta.transcription.vercel import PRESETS
-
-        current = tr["vercel"].get("model", PRESETS["whisper"]["model"])
-        model = args.vercel_model or p.select(t("setup.vercel_model"),
-                                              [(v["model"], f"{k} ({v['model']})") for k, v in PRESETS.items()],
-                                              current)
-        tr["vercel"]["model"] = model
-        if args.api_key_env:
-            import os
-
-            api_key = os.environ.get(args.api_key_env) or None
-        elif p.interactive:
-            api_key = p.password(t("setup.api_key")) or None
-
+    api_key = engine_step(cfg, args, p)
     tr["mode"] = args.transcription_mode or p.select(t("setup.mode"), [("on-demand", t("setup.mode.on-demand")),
                                                                          ("auto", t("setup.mode.auto"))], tr["mode"])
-    if engine == "vercel":
-        if args.max_usd is not None:
-            tr["max_usd"] = float(args.max_usd)
-        elif p.interactive:
-            tr["max_usd"] = float(p.text(t("setup.max_usd"), str(tr["max_usd"])) or tr["max_usd"])
     if args.transcription_language is not None:
         tr["language"] = args.transcription_language
     elif p.interactive:
         tr["language"] = p.text(t("setup.tlang"), tr.get("language") or "")
+    rec = cfg.setdefault("recording", {})
+    rec["mode"] = getattr(args, "recording_mode", None) or p.select(
+        t("setup.recording"), [(m, t(f"mode.{m}.long")) for m in config_mod.RECORDING_MODES], rec.get("mode", "auto"))
+    if getattr(args, "extension_dir", None):
+        g["extension_dir"] = str(Path(args.extension_dir).expanduser())
     if args.port:
         cfg["server"]["port"] = int(args.port)
     if args.app_dir:
@@ -143,6 +164,91 @@ def build_config(args, p: Prompter) -> tuple[dict, str | None]:
     if args.secrets_backend:
         cfg["secrets"]["backend"] = args.secrets_backend
     return cfg, api_key
+
+
+def engine_step(cfg: dict, args, p: Prompter) -> str | None:
+    """Choose local or Vercel AI Gateway, explaining both first. Returns an API key to store, or None."""
+    from minuta import ui
+    from minuta.actions import SPEED
+    from minuta.transcription.vercel import KEY_NAME, KEYS_PAGE, PRESETS, check_key, usd_per_minute
+
+    tr = cfg["transcription"]
+    if getattr(args, "local_model", None):
+        tr["local"]["model"] = args.local_model
+    engine = getattr(args, "engine", None)
+    if engine is None and p.interactive:
+        hour = 3600 * _local_speed(tr, SPEED)
+        ui.blank()
+        ui.say(t("setup.engine.explain_local", time=ui.duration(hour)))
+        ui.say(t("setup.engine.explain_vercel", usd=60 * usd_per_minute({"model": PRESETS["whisper"]["model"]})))
+        engine = p.select(t("setup.engine"), [("local", t("setup.engine.local")),
+                                               ("vercel", t("setup.engine.vercel"))], tr["engine"])
+    tr["engine"] = engine = engine or tr["engine"]
+    if engine != "vercel":
+        return None
+    current = tr["vercel"].get("model", PRESETS["whisper"]["model"])
+    model = getattr(args, "vercel_model", None) or p.select(
+        t("setup.vercel_model"), [(v["model"], _preset_label(k, v)) for k, v in PRESETS.items()], current)
+    tr["vercel"]["model"] = model
+    if getattr(args, "max_usd", None) is not None:
+        tr["max_usd"] = float(args.max_usd)
+    if getattr(args, "api_key_env", None):
+        return os.environ.get(args.api_key_env) or None
+    if not p.interactive:
+        return None
+    has = bool(credentials.store(cfg).get(KEY_NAME))
+    ui.say(t("setup.api_key_where", url=KEYS_PAGE))
+    while True:
+        key = p.password(t("setup.api_key_keep") if has else t("setup.api_key")) or None
+        if key is None:
+            break
+        with ui.step(t("setup.api_key_checking")):
+            verdict, detail = check_key(key)
+        if verdict == "ok":
+            ui.ok(t("setup.api_key_ok", balance=detail or "?"))
+            break
+        if verdict == "unknown":
+            ui.warn(t("setup.api_key_unknown", reason=detail or "?"))
+            break
+        ui.fail(t("setup.api_key_invalid"))
+    tr["max_usd"] = float(p.text(t("setup.max_usd"), str(tr["max_usd"])) or tr["max_usd"])
+    ui.say(t("setup.api_key_confirm_note"), style="dim")
+    return key
+
+
+def _local_speed(tr: dict, speed: dict) -> float:
+    try:
+        from minuta.transcription.local import is_apple_silicon
+
+        if is_apple_silicon():
+            return speed["mlx"]
+        device = (tr.get("local") or {}).get("device") or "auto"
+        if device == "auto":
+            import shutil
+
+            device = "cuda" if shutil.which("nvidia-smi") else "cpu"
+        return speed.get(device, speed["cpu"])
+    except Exception:  # noqa: BLE001 - only for an estimate
+        return speed["cpu"]
+
+
+def _preset_label(name: str, preset: dict) -> str:
+    from minuta.transcription.vercel import usd_per_minute
+
+    return t("setup.vercel_preset", name=name, model=preset["model"], usd=60 * usd_per_minute(preset))
+
+
+def store_api_key(cfg: dict, api_key: str | None) -> None:
+    if cfg["transcription"]["engine"] != "vercel":
+        return
+    from minuta import ui
+    from minuta.transcription.vercel import KEY_NAME
+
+    store = credentials.store(cfg)
+    if api_key:
+        ui.ok(t("setup.api_key_saved", where=store.set(KEY_NAME, api_key)))
+    elif not store.get(KEY_NAME):
+        ui.warn(t("setup.api_key_missing"))
 
 
 class Cancelled(Exception):
@@ -193,6 +299,7 @@ def destinations_step(cfg: dict, args, p: Prompter) -> list[str]:
     `--option key=value`), or else, in a terminal, one picked from a list. Returns the names added.
     Each goes through add_destination(), so its configure() asks what is missing."""
     from minuta import destinations as reg
+    from minuta import ui
     from minuta.redact import redact
 
     wanted = []
@@ -218,9 +325,9 @@ def destinations_step(cfg: dict, args, p: Prompter) -> list[str]:
         except ValueError as e:
             ok, message = False, str(e)
         if not ok:
-            print(redact(t("setup.dest_failed", name=name, error=message)))
+            ui.warn(redact(t("setup.dest_failed", name=name, error=message)))
             continue
-        print(redact(t("setup.dest_added", name=name, message=message)))
+        ui.ok(redact(t("setup.dest_added", name=name, message=message)))
         added.append(name)
         _offer_deleting_local_audio(cfg, name, p)
     return added
@@ -263,36 +370,60 @@ def wait_for_extension(port: int, seconds: float, since: float) -> bool:
     return False
 
 
+def file_manager_name() -> str:
+    return t("fm.mac") if sys.platform == "darwin" else t("fm.windows") if os.name == "nt" else t("fm.linux")
+
+
 def extension_step(cfg: dict, args, p: Prompter) -> None:
+    from minuta import ui
+
     port = int(cfg["server"]["port"])
-    ext = browser.extension_dir(cfg)
+    with ui.step(t("setup.ext_copying")):
+        ext = browser.install_extension(cfg)
     code = pairing.new_code()
     found = browser.detect()
-    print()
-    print(t("setup.ext_title"))
+    ui.blank()
+    ui.markup(f"[head]{ui.esc(t('setup.ext_title'))}[/]")
+    ui.say(t("setup.ext_folder"))
+    ui.markup("  " + ui.path_markup(ext))
+    opening = p.interactive and not args.no_browser
     if found:
-        b = found[0]
-        print(t("setup.ext_steps", url=b.extensions_url, browser=b.name, path=ext, code=code))
-        if p.interactive and not args.no_browser:
-            browser.open_extensions_page(b)
+        chosen = found[0]
+        if p.interactive and len(found) > 1:
+            name = p.select(t("setup.which_browser"), [(b.name, b.name) for b in found], found[0].name)
+            chosen = next(b for b in found if b.name == name)
+        ui.say(t("setup.ext_steps", url=chosen.extensions_url, browser=chosen.name, fm=file_manager_name()))
+        others = [b for b in found if b is not chosen]
+        if others:
+            ui.say(t("setup.ext_other_browsers", list=", ".join(f"{b.name}: {b.extensions_url}" for b in others)),
+                   style="dim")
     else:
-        print(t("setup.no_browser", path=ext))
-        print(t("pair.code", code=code))
+        ui.say(t("setup.no_browser"))
+    ui.markup(f"{ui.esc(t('pair.code_label'))}  [bold accent]{code}[/]  [dim]{ui.esc(t('pair.valid'))}[/]")
+    if opening:
+        if ui.copy_to_clipboard(str(ext)):
+            ui.ok(t("setup.ext_copied"))
+        if ui.open_with_system(ext):
+            ui.ok(t("setup.ext_folder_opened", fm=file_manager_name()))
+        if found:
+            browser.open_extensions_page(chosen)
     if args.skip_extension or (not p.interactive and not args.wait_extension):
-        print(t("setup.ext_skipped"))
+        ui.say(t("setup.ext_skipped"))
         return
     seconds = int(args.wait_extension or 600)
-    print(t("setup.waiting_ext", seconds=seconds))
     since = time.time() - 1
     try:
-        ok = wait_for_extension(port, seconds, since)
+        with ui.step(t("setup.waiting_ext", seconds=seconds)):
+            ok = wait_for_extension(port, seconds, since)
     except KeyboardInterrupt:
-        print(t("setup.ext_skipped"))
+        ui.say(t("setup.ext_skipped"))
         return
-    print(t("setup.ext_ok") if ok else t("setup.ext_timeout"))
+    (ui.ok if ok else ui.warn)(t("setup.ext_ok") if ok else t("setup.ext_timeout"))
 
 
 def run(args) -> int:
+    from minuta import ui
+
     interactive = not args.non_interactive
     p = Prompter(interactive)
     try:
@@ -304,32 +435,28 @@ def run(args) -> int:
     errors = config_mod.validate(cfg)
     if errors:
         for e in errors:
-            print(f"config: {e}")
+            ui.error(f"config: {e}")
         return 2
+    ui.blank()
     path = config_mod.save(cfg)
-    print(t("setup.saved", path=path))
+    ui.ok(t("setup.saved", path=path))
     config_mod.make_data_dirs(cfg)
     pairing.get_token(create=True)
-
-    if cfg["transcription"]["engine"] == "vercel":
-        from minuta.transcription.vercel import KEY_NAME
-
-        store = credentials.store(cfg)
-        if api_key:
-            print(t("setup.api_key_saved", where=store.set(KEY_NAME, api_key)))
-        elif not store.get(KEY_NAME):
-            print(t("setup.api_key_missing"))
+    store_api_key(cfg, api_key)
 
     port = int(cfg["server"]["port"])
     service_ok = False
     if not args.no_service:
         try:
-            where = ServiceManager().install()
-            print(t("setup.service_installed", where=where))
-            service_ok = wait_for_server(port, 20)
-            print(t("setup.server_up", port=port) if service_ok else t("setup.server_down", port=port))
+            with ui.step(t("setup.service_installing")):
+                where = ServiceManager().install()
+            ui.ok(t("setup.service_installed", where=where))
+            with ui.step(t("setup.server_waiting")):
+                service_ok = wait_for_server(port, 20)
+            (ui.ok if service_ok else ui.warn)(t("setup.server_up", port=port) if service_ok
+                                               else t("setup.server_down", port=port))
         except Exception as e:  # noqa: BLE001
-            print(t("setup.service_failed", error=e))
+            ui.fail(t("setup.service_failed", error=e))
     else:
         service_ok = bool(client.health(port))
 
@@ -337,7 +464,7 @@ def run(args) -> int:
         if service_ok or args.skip_extension or not interactive:
             extension_step(cfg, args, p)
     except KeyboardInterrupt:
-        print(t("setup.ext_skipped"))
-    print()
-    print(t("setup.done"))
+        ui.say(t("setup.ext_skipped"))
+    ui.blank()
+    ui.say(t("setup.done"))
     return 0

@@ -102,22 +102,109 @@ def _offline_if_cached(repo: str) -> None:
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 
+FASTER_WHISPER_FILES = ["config.json", "preprocessor_config.json", "model.bin", "tokenizer.json", "vocabulary.*"]
+
+
+def _folder_size(folder: Path) -> int:
+    total = 0
+    try:
+        for f in folder.iterdir():
+            try:
+                total += f.stat().st_size
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return total
+
+
+def fetch_model(repo: str, patterns: list[str] | None, on_progress=None) -> str:
+    """The model's folder, downloading it first when it is not in the Hugging Face cache. While it
+    downloads, `on_progress("download", fraction, done=bytes, total=bytes, model=repo)` every ~0.3 s."""
+    import fnmatch
+    import threading
+
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")  # our own bar replaces tqdm's
+    import warnings
+
+    from huggingface_hub import constants, snapshot_download
+    from huggingface_hub.utils import logging as hf_logging
+
+    hf_logging.set_verbosity_error()  # "unauthenticated requests" and the like are not for the user
+    warnings.filterwarnings("ignore", module="huggingface_hub")
+
+    try:
+        return snapshot_download(repo, allow_patterns=patterns, local_files_only=True)
+    except Exception:  # noqa: BLE001, S110 - not cached (or incomplete): download below
+        pass
+    total = None
+    try:
+        from huggingface_hub import HfApi
+
+        info = HfApi().model_info(repo, files_metadata=True)
+        total = sum(f.size or 0 for f in info.siblings or []
+                    if patterns is None or any(fnmatch.fnmatch(f.rfilename, p) for p in patterns)) or None
+    except Exception:  # noqa: BLE001, S110 - the size is only for the bar
+        pass
+    blobs = Path(constants.HF_HUB_CACHE) / f"models--{repo.replace('/', '--')}" / "blobs"
+    start = _folder_size(blobs)
+    result: dict = {}
+
+    def run() -> None:
+        try:
+            result["path"] = snapshot_download(repo, allow_patterns=patterns)
+        except Exception as e:  # noqa: BLE001 - raised again in the caller's thread
+            result["error"] = e
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    while worker.is_alive():
+        done = max(0, _folder_size(blobs) - start)
+        if on_progress is not None:
+            on_progress("download", min(1.0, done / total) if total else None, done=done, total=total, model=repo)
+        worker.join(0.3)
+    if "error" in result:
+        raise result["error"]
+    if on_progress is not None:
+        on_progress("download", 1.0, done=total or 0, total=total, model=repo)
+    return result["path"]
+
+
+def model_repo(settings: dict) -> str | None:
+    """The Hugging Face repository of a model setting, or None for a folder on disk."""
+    model = settings["model"]
+    if os.path.isdir(model):
+        return None
+    if settings["backend"] == "mlx" or "/" in model:
+        return model
+    try:
+        from faster_whisper.utils import _MODELS
+    except ImportError:
+        return None
+    return _MODELS.get(model)
+
+
 class FasterWhisperEngine:
     name = "local"
     usd_per_minute = 0.0
 
-    def __init__(self, opts: dict):
+    def __init__(self, opts: dict, on_progress=None):
         s = resolve_settings(opts)
         self.model = s["model"]
         if s["device"] == "cuda":
             _preload_cuda_libs()
         logging.getLogger("faster_whisper").setLevel(logging.WARNING)
+        repo = model_repo(s)
+        path = fetch_model(repo, FASTER_WHISPER_FILES, on_progress) if repo else s["model"]
+        if on_progress is not None:
+            on_progress("model", None, engine="local", model=self.model)
         from faster_whisper import BatchedInferencePipeline, WhisperModel
 
-        model = WhisperModel(s["model"], device=s["device"], compute_type=s["compute_type"])
+        model = WhisperModel(path, device=s["device"], compute_type=s["compute_type"])
         self._pipe = BatchedInferencePipeline(model)
 
-    def transcribe_channel(self, x: np.ndarray, segments, tcfg: dict, budget=None, cost=None) -> list[dict]:
+    def transcribe_channel(self, x: np.ndarray, segments, tcfg: dict, budget=None, cost=None,
+                           progress=None) -> list[dict]:
         if not segments:
             return []
         segs, _ = self._pipe.transcribe(
@@ -135,6 +222,8 @@ class FasterWhisperEngine:
             text = s.text.strip()
             if (s.no_speech_prob > 0.8 and s.avg_logprob < -1) or not text or invented(text):
                 continue
+            if progress is not None:
+                progress(float(s.end))
             out.append({"start": float(s.start), "end": float(s.end), "text": text})
         return out
 
@@ -143,10 +232,14 @@ class MlxWhisperEngine:
     name = "local"
     usd_per_minute = 0.0
 
-    def __init__(self, opts: dict):
+    def __init__(self, opts: dict, on_progress=None):
         s = resolve_settings(opts)
         self.model = s["model"]
+        repo = model_repo(s)
+        self._path = fetch_model(repo, None, on_progress) if repo else self.model
         _offline_if_cached(self.model)
+        if on_progress is not None:
+            on_progress("model", None, engine="local", model=self.model)
         import mlx.core as mx
         import mlx_whisper
 
@@ -157,7 +250,8 @@ class MlxWhisperEngine:
     def _piece(self, audio: np.ndarray, tcfg: dict) -> list[dict]:
         r = self._mlx.transcribe(
             audio,
-            path_or_hf_repo=self.model,
+            path_or_hf_repo=self._path,
+            verbose=None,  # False would still draw tqdm's bar over ours
             language=language_iso(tcfg.get("language")),
             initial_prompt=prompt(tcfg) or None,
             condition_on_previous_text=False,
@@ -175,16 +269,20 @@ class MlxWhisperEngine:
                 out.append({"start": float(s["start"]), "end": float(s["end"]), "text": text})
         return out
 
-    def transcribe_channel(self, x: np.ndarray, segments, tcfg: dict, budget=None, cost=None) -> list[dict]:
+    def transcribe_channel(self, x: np.ndarray, segments, tcfg: dict, budget=None, cost=None,
+                           progress=None) -> list[dict]:
         out = []
         for a, b in segments:
             for s in self._piece(x[int(a * SR): int(b * SR)], tcfg):
                 out.append({"start": a + s["start"], "end": a + min(s["end"], b - a), "text": s["text"]})
+            if progress is not None:
+                progress(float(b))
         return out
 
 
-def create(opts: dict):
-    return MlxWhisperEngine(opts) if is_apple_silicon() else FasterWhisperEngine(opts)
+def create(opts: dict, on_progress=None):
+    cls = MlxWhisperEngine if is_apple_silicon() else FasterWhisperEngine
+    return cls(opts, on_progress=on_progress)
 
 
 def available() -> tuple[bool, str]:

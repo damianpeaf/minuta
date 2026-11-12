@@ -141,6 +141,14 @@ class Meeting:
             self.update(audio={**audio, "deleted": True, "deleted_at": now_iso()})
 
 
+class MeetingLookupError(LookupError):
+    """A meeting reference that names no meeting, or more than one. `key` and `kw` are for i18n.t."""
+
+    def __init__(self, message: str, key: str, **kw):
+        super().__init__(message)
+        self.key, self.kw = key, kw
+
+
 class MeetingStore:
     def __init__(self, root: Path):
         self.root = root
@@ -161,7 +169,7 @@ class MeetingStore:
         meetings = [m for m in self.all() if m.status != DISCARDED]
         if ref in ("latest", "last"):
             if not meetings:
-                raise LookupError("there are no meetings yet")
+                raise MeetingLookupError("there are no meetings yet", "lookup.none")
             return meetings[-1]
         if valid_id(ref) and (self.root / ref / "meeting.json").exists():
             return self.get(ref)
@@ -169,5 +177,6 @@ class MeetingStore:
         if len(matches) == 1:
             return matches[0]
         if not matches:
-            raise LookupError(f"no meeting matches {ref!r}")
-        raise LookupError(f"{ref!r} matches {len(matches)} meetings; use more of the id")
+            raise MeetingLookupError(f"no meeting matches {ref!r}", "lookup.no_match", ref=ref)
+        raise MeetingLookupError(f"{ref!r} matches {len(matches)} meetings; use more of the id", "lookup.ambiguous",
+                                 ref=ref, n=len(matches))

@@ -39,7 +39,9 @@ jinja2==3.1.6 ; platform_machine == 'arm64' and sys_platform == 'darwin'
 keyring==25.7.0
 lazy-importer==0.1.0 ; python_full_version == '3.11.*'
 llvmlite==0.50.0 ; platform_machine == 'arm64' and sys_platform == 'darwin'
+markdown-it-py==4.3.0
 markupsafe==3.0.4 ; platform_machine == 'arm64' and sys_platform == 'darwin'
+mdurl==0.1.2
 mlx==0.32.4 ; platform_machine == 'arm64' and sys_platform == 'darwin'
 mlx-metal==0.32.4 ; platform_machine == 'arm64' and sys_platform == 'darwin'
 mlx-whisper==0.4.3 ; platform_machine == 'arm64' and sys_platform == 'darwin'
@@ -65,6 +67,7 @@ prompt-toolkit==3.0.53
 protobuf==7.36.2 ; platform_machine != 'arm64' or sys_platform != 'darwin'
 pycparser==3.11 ; python_full_version < '3.11' and implementation_name != 'PyPy' and platform_python_implementation != 'PyPy' and sys_platform == 'linux'
 pycparser==3.12 ; python_full_version >= '3.11' and implementation_name != 'PyPy' and platform_python_implementation != 'PyPy' and sys_platform == 'linux'
+pygments==2.21.0
 pyreadline3==3.5.6 ; python_full_version < '3.11' and sys_platform == 'win32'
 pywin32-ctypes==0.2.3 ; sys_platform == 'win32'
 pyyaml==6.0.3
@@ -72,6 +75,7 @@ questionary==2.1.1
 regex==2026.9.29 ; python_full_version < '3.11' and platform_machine == 'arm64' and sys_platform == 'darwin'
 regex==2026.11.9 ; python_full_version >= '3.11' and platform_machine == 'arm64' and sys_platform == 'darwin'
 requests==2.34.2
+rich==15.0.0
 scipy==1.15.3 ; python_full_version < '3.11' and platform_machine == 'arm64' and sys_platform == 'darwin'
 scipy==1.17.1 ; python_full_version == '3.11.*' and platform_machine == 'arm64' and sys_platform == 'darwin'
 scipy==1.18.1 ; python_full_version >= '3.12' and platform_machine == 'arm64' and sys_platform == 'darwin'

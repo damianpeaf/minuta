@@ -66,8 +66,10 @@ class RedactingFilter(logging.Filter):
         return True
 
 
-def setup_logging(level: int = logging.INFO, logfile=None) -> None:
-    handlers: list[logging.Handler] = [logging.StreamHandler()]
+def setup_logging(level: int = logging.INFO, logfile=None, stream: bool = True) -> None:
+    """Log to stderr (`stream`) and/or a rotating file. The CLI logs only to the file: what the user
+    needs to know is printed as a message of its own."""
+    handlers: list[logging.Handler] = [logging.StreamHandler()] if stream else []
     if logfile is not None:
         from logging.handlers import RotatingFileHandler
 

@@ -25,12 +25,13 @@ def window_seconds(name: str, cfg: dict) -> float | None:
     return None
 
 
-def create_engine(name: str, cfg: dict, secrets=None):
+def create_engine(name: str, cfg: dict, secrets=None, on_progress=None):
+    """`on_progress(step, fraction, **info)`: the local engine reports "download" while it fetches its model."""
     t = cfg["transcription"]
     if name == "local":
         from minuta.transcription import local
 
-        return local.create(t.get("local") or {})
+        return local.create(t.get("local") or {}, on_progress=on_progress)
     if name == "vercel":
         from minuta.transcription.vercel import KEY_NAME, VercelEngine
 

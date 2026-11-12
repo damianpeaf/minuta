@@ -19,6 +19,8 @@ else:  # pragma: no cover
 DEFAULT_PORT = 47321
 AUDIO_FORMATS = ("opus", "mp3")
 TRANSCRIPTION_MODES = ("on-demand", "auto")
+# auto: record every call; ask: the extension asks when a call starts; manual: only from the popup.
+RECORDING_MODES = ("auto", "ask", "manual")
 
 DEFAULTS: dict[str, Any] = {
     "general": {
@@ -28,7 +30,9 @@ DEFAULTS: dict[str, Any] = {
         "app_dir": "",  # source checkout used by `minuta update`
         "install_extras": "local",  # extras `minuta update` reinstalls with (local, local,cuda or empty)
         "install_ref": "",  # branch or tag `minuta update` follows (MINUTA_REF at install; empty: default branch)
+        "extension_dir": "",  # copy of the browser extension to load; empty: ~/minuta-extension
     },
+    "recording": {"mode": "auto"},  # auto | ask | manual
     "speakers": {"me": "Me", "others": "Others"},
     "server": {"port": DEFAULT_PORT},
     "storage": {"delete_local_audio_after_upload": False},
@@ -120,6 +124,8 @@ def validate(cfg: dict) -> list[str]:
     port = cfg["server"].get("port")
     if not isinstance(port, int) or not (1024 <= port <= 65535):
         errors.append("server.port must be an integer between 1024 and 65535")
+    if (cfg.get("recording") or {}).get("mode") not in RECORDING_MODES:
+        errors.append(f"recording.mode must be one of {RECORDING_MODES}")
     if cfg["transcription"].get("mode") not in TRANSCRIPTION_MODES:
         errors.append(f"transcription.mode must be one of {TRANSCRIPTION_MODES}")
     for name, d in (cfg.get("destinations") or {}).items():

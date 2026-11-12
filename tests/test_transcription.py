@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 
 import numpy as np
 import pytest
@@ -400,3 +401,87 @@ def test_auto_device_needs_cublas_not_just_a_gpu(monkeypatch):
     monkeypatch.setattr(local, "cuda_available", lambda: True)
     s = local.resolve_settings({"model": "auto", "device": "auto"})
     assert (s["model"], s["device"], s["compute_type"]) == ("large-v3-turbo", "cuda", "float16")
+
+
+def test_vercel_key_is_checked_without_spending(monkeypatch):
+    import http.server
+    import threading
+
+    from minuta.transcription import vercel
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            good = self.headers.get("Authorization") == "Bearer good-key-123"
+            self.send_response(200 if good else 401)
+            self.end_headers()
+            self.wfile.write(b'{"balance": "4.50", "total_used": "0.50"}' if good else b"{}")
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        monkeypatch.setattr(vercel, "CREDITS_URL", f"http://127.0.0.1:{srv.server_port}/v1/credits")
+        assert vercel.check_key("good-key-123") == ("ok", "4.50")
+        assert vercel.check_key("bad-key-456") == ("invalid", None)
+    finally:
+        srv.shutdown()
+    monkeypatch.setattr(vercel, "CREDITS_URL", "http://127.0.0.1:9/v1/credits")
+    assert vercel.check_key("good-key-123")[0] == "unknown"
+
+
+def test_pipeline_reports_its_steps_and_the_progress(cfg, stereo_webm, tmp_path):
+    import shutil
+
+    from minuta.meetings import MeetingStore
+    from minuta.transcription.pipeline import transcribe
+
+    class Engine:
+        model = "fake"
+
+        def transcribe_channel(self, x, segments, tcfg, budget=None, cost=None, progress=None):
+            for _a, b in segments:
+                progress(b)
+            return [{"start": a, "end": b, "text": "hola"} for a, b in segments]
+
+    m = MeetingStore(tmp_path / "meetings").get("2026-05-05T10-00-00-000Z_progress")
+    m.update(status="ready")
+    shutil.copy(stereo_webm, m.dir / "audio.webm")
+    events = []
+    transcribe(m, cfg, "local", engine=Engine(), on_progress=lambda step, f, info: events.append((step, f)))
+    steps = [s for s, _ in events]
+    assert steps[0] == "audio" and steps[-1] == "done"
+    fractions = [f for s, f in events if s == "transcribe"]
+    assert fractions == sorted(fractions) and fractions[-1] == 1.0 and len(fractions) >= 3
+
+
+def test_a_missing_model_is_downloaded_with_progress(monkeypatch, tmp_path):
+    pytest.importorskip("huggingface_hub")
+    import huggingface_hub
+    import huggingface_hub.constants
+
+    from minuta.transcription import local
+
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_CACHE", str(tmp_path))
+    blobs = tmp_path / "models--org--tiny" / "blobs"
+
+    def fake_download(repo, allow_patterns=None, local_files_only=False, **kw):
+        if local_files_only:
+            raise FileNotFoundError("not cached")
+        blobs.mkdir(parents=True, exist_ok=True)
+        for i in range(3):
+            (blobs / f"part{i}").write_bytes(b"x" * 1000)
+            time.sleep(0.35)
+        return str(tmp_path / "snapshot")
+
+    class Info:
+        siblings = [type("F", (), {"rfilename": "model.bin", "size": 3000})()]
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_download)
+    monkeypatch.setattr(huggingface_hub, "HfApi", lambda: type("A", (), {"model_info": lambda *a, **k: Info()})())
+    events = []
+    path = local.fetch_model("org/tiny", ["model.bin"], lambda step, f, **info: events.append((step, f, info)))
+    assert path == str(tmp_path / "snapshot")
+    assert all(s == "download" for s, _, _ in events) and events[-1][1] == 1.0
+    assert events[-1][2]["total"] == 3000 and 0 < min(f for _, f, _ in events if f) < 1

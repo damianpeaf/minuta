@@ -84,8 +84,13 @@ the built-in ones are declared in `pyproject.toml`, and a plugin cannot replace 
 
 ## The command line and the service
 
-[`cli.py`](../src/minuta/cli.py) is the `minuta` command; [`setup.py`](../src/minuta/setup.py) is
-the assistant; [`service.py`](../src/minuta/service.py) installs `minuta serve` as a systemd user
+[`actions.py`](../src/minuta/actions.py) is what each command does, as data (status, meetings,
+destinations, engines with their estimates, transcribe and retry with an `on_progress(step, fraction,
+info)` callback): nothing there prints or translates, so the server can offer the same actions to
+the extension. [`cli.py`](../src/minuta/cli.py) is the `minuta` command and its menu: it asks with
+questionary, prints with [`ui.py`](../src/minuta/ui.py) (rich tables, a spinner per step, progress
+bars) and translates with [`i18n.py`](../src/minuta/i18n.py); logs go to `cli.log`, not the
+terminal. [`setup.py`](../src/minuta/setup.py) is the assistant; [`service.py`](../src/minuta/service.py) installs `minuta serve` as a systemd user
 unit (Linux), a launchd agent (macOS, `io.minuta.server`) or a logon task in Task Scheduler
 (Windows, with a per-user `Run` registry entry as fallback).
 [`credentials.py`](../src/minuta/credentials.py) stores secrets in the OS keyring or a 0600 `.env`,

@@ -20,8 +20,8 @@ def _get(port: int, path: str, token: str | None = None, timeout: float = 2.0) -
         return None
 
 
-def health(port: int) -> dict | None:
-    h = _get(port, "/health")
+def health(port: int, timeout: float = 2.0) -> dict | None:
+    h = _get(port, "/health", timeout=timeout)
     return h if h and h.get("app") == "minuta" else None
 
 

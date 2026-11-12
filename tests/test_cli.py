@@ -119,7 +119,7 @@ def test_destinations_add_test_disable_remove(capsys, tmp_path):
     run(capsys, "destinations", "disable", "backup")
     assert config_mod.load()["destinations"]["backup"]["enabled"] is False
     code, out = run(capsys, "destinations", "list")
-    assert "backup" in out and "disabled" in out and "local (Keep meetings" in out
+    assert "backup" in out and "disabled" in out and "keep meetings in the data folder" in out
     run(capsys, "destinations", "remove", "backup")
     assert "backup" not in config_mod.load()["destinations"]
     assert run(capsys, "destinations", "add", "x", "--type", "nope")[0] == 2
@@ -141,7 +141,7 @@ def test_list_shows_failed_deliveries(capsys):
     m = make_meeting(config_mod.load(), audio=False)
     m.update_path(["destinations", "hook", "meeting"], {"status": "failed", "error": "503"})
     code, out = run(capsys, "list")
-    assert code == 0 and "[failed: hook:meeting]" in out
+    assert code == 0 and "not delivered to hook" in out
 
 
 def test_webhook_add_keeps_secrets_out_of_config_and_output_and_remove_deletes_them(capsys):
@@ -356,7 +356,7 @@ def test_retry_delivers_to_a_destination_added_later(capsys, tmp_path):
     m = make_meeting(cfg)
     run(capsys, "destinations", "add", "later", "--type", "local", "--option", f"copy_to={tmp_path / 'later'}")
     code, out = run(capsys, "retry")
-    assert code == 0 and "later:meeting" in out
+    assert code == 0 and "later" in out and "meeting" in out
     assert any((tmp_path / "later").iterdir())
     assert m.read()["destinations"]["later"]["meeting"]["status"] == "ok"
     assert "Nothing to retry" in run(capsys, "retry")[1]
@@ -665,3 +665,64 @@ def test_macos_prompts_use_select_so_dev_tty_works(monkeypatch):
         loop.close()
     finally:
         asyncio.set_event_loop_policy(before)
+
+
+def test_recording_mode_from_the_cli_and_setup(capsys):
+    run(capsys, *SETUP, "--recording-mode", "ask", "--language", "es")
+    assert config_mod.load()["recording"]["mode"] == "ask"
+    code, out = run(capsys, "mode", "manual")
+    assert code == 0 and "graba solo cuando lo pides" in out
+    assert config_mod.load()["recording"]["mode"] == "manual"
+    cfg = config_mod.load()
+    cfg["recording"]["mode"] = "sometimes"
+    assert any("recording.mode" in e for e in config_mod.validate(cfg))
+
+
+@needs_ffmpeg
+def test_transcribe_shows_each_step_and_where_the_files_are(capsys, monkeypatch, tmp_path):
+    from minuta import transcription
+
+    class Engine:
+        model = "fake"
+        usd_per_minute = 0.0
+
+        def transcribe_channel(self, x, segments, tcfg, budget=None, cost=None, progress=None):
+            out = []
+            for a, b in segments:
+                out.append({"start": a + 0.2, "end": b - 0.2, "text": "hola"})
+                progress(b)
+            return out
+
+    monkeypatch.setattr(transcription, "create_engine", lambda *a, **k: Engine())
+    monkeypatch.setattr("minuta.transcription.pipeline.create_engine", lambda *a, **k: Engine())
+    run(capsys, *SETUP, "--language", "es", "--name", "Ana",
+        "--destination", "local", "--option", f"copy_to={tmp_path / 'Documents'}")
+    m = make_meeting(config_mod.load())
+    from minuta.router import Router
+
+    Router(config_mod.load()).deliver_meeting(m)
+    code, out = run(capsys, "transcribe", "latest")
+    assert code == 0, out
+    lines = out.splitlines()
+    done = [x for x in lines if x.startswith("ok  ")]
+    assert done[0] == "ok  Audio listo" and done[1].startswith("ok  Transcrita (") and done[1].endswith(" s de voz)")
+    assert done[2:] == ["ok  Enviada a los destinos"]
+    assert "INFO" not in out and "minuta.router" not in out  # logs go to the log file
+    copy = next(x for x in lines if x.startswith("Archivo"))
+    assert str(tmp_path / "Documents") in copy and "transcript.md" in copy and "copia de local" in copy
+    assert any(x.startswith("También en") and str(m.dir) in x for x in lines)
+    assert "Ana (1 intervención)" in out and "hola" in out
+    assert (paths.log_dir() / "cli.log").read_text().count("transcript delivered to local") == 1
+
+
+def test_engine_can_be_changed_later(capsys, monkeypatch):
+    run(capsys, *SETUP)
+    monkeypatch.setenv("GATEWAY", "vk_test_abcdef123456")
+    code, out = run(capsys, "engine", "--engine", "vercel", "--vercel-model", "openai/whisper-1",
+                    "--api-key-env", "GATEWAY", "--non-interactive")
+    assert code == 0 and "openai/whisper-1" in out and "vk_test" not in out
+    cfg = config_mod.load()
+    assert cfg["transcription"]["engine"] == "vercel"
+    assert credentials.store(cfg).get("AI_GATEWAY_API_KEY") == "vk_test_abcdef123456"
+    assert run(capsys, "engine", "--engine", "local", "--non-interactive")[0] == 0
+    assert config_mod.load()["transcription"]["engine"] == "local"

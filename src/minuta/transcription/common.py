@@ -166,7 +166,7 @@ def compact(x: np.ndarray, batch, gap: float = GAP):
 
 
 def by_windows(x, segments, request, maximum: float = WINDOW, budget=None, cost=None,
-               parallel: int = PARALLEL) -> list[dict]:
+               parallel: int = PARALLEL, progress=None) -> list[dict]:
     """`request(mp3_bytes, seconds) -> [{"start","end","text"}]` relative to the audio sent.
     Only speech is sent (see `compact`). With a budget, each batch reserves `cost(seconds)` before
     it leaves and is not sent if the cap would be exceeded."""
@@ -183,5 +183,11 @@ def by_windows(x, segments, request, maximum: float = WINDOW, budget=None, cost=
                 out.append({"start": start, "end": max(start, end), "text": s["text"]})
         return out
 
+    groups = list(batches(segments, maximum))
+    out: list[dict] = []
     with ThreadPoolExecutor(parallel) as ex:
-        return [s for r in ex.map(one, batches(segments, maximum)) for s in r]
+        for batch, r in zip(groups, ex.map(one, groups), strict=True):
+            out += r
+            if progress is not None and batch:
+                progress(float(batch[-1][1]))
+    return out

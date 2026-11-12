@@ -15,6 +15,9 @@ minuta doctor
 | Linux | `~/.local/state/minuta/log/server.log` | `journalctl --user -u minuta.service` |
 | Windows | `%LOCALAPPDATA%\minuta\Logs\server.log` | - |
 
+What `minuta transcribe` and `minuta retry` do is logged next to it, in `cli.log`; the terminal
+only shows the steps. `--verbose` prints the log in the terminal too.
+
 Secrets are masked in every log. The extension's own messages are in the extensions page: minuta
 card, *Inspect views: service worker*, Console.
 
