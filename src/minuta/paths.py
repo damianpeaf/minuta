@@ -7,6 +7,9 @@ platform's usual places are used (platformdirs). The data folder can be moved in
 from __future__ import annotations
 
 import os
+import shutil
+import stat
+import sys
 from pathlib import Path
 
 from platformdirs import user_config_dir, user_data_dir, user_log_dir
@@ -74,3 +77,20 @@ def write_private(path: Path, text: str) -> None:
     if os.name == "posix":
         os.chmod(tmp, 0o600)
     os.replace(tmp, path)
+
+
+def remove_tree(path: Path) -> None:
+    """Delete a folder like `shutil.rmtree(ignore_errors=True)`, but also its read-only files: on Windows
+    git checks out its objects read-only, and a plain rmtree leaves the whole checkout behind."""
+
+    def clear_and_retry(func, target, _exc):
+        try:
+            os.chmod(target, stat.S_IWRITE)
+            func(target)
+        except OSError:
+            pass
+
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=clear_and_retry)
+    else:
+        shutil.rmtree(path, onerror=clear_and_retry)  # onexc is 3.12+

@@ -134,12 +134,20 @@ jobs:
           & $m --version
           & $m status
           & $m list
-      - name: Uninstall
+      - name: Uninstall leaves nothing behind
         shell: pwsh
         run: |
-          $m = Join-Path (uv tool dir --bin).Trim() "minuta.exe"
-          & $m uninstall --yes --delete-data
-          if (Test-Path (Join-Path $env:LOCALAPPDATA "minuta\app")) { throw "app folder left behind" }
+          $bin = (uv tool dir --bin).Trim()
+          $tool = Join-Path (uv tool dir).Trim() "minuta"
+          & (Join-Path $bin "minuta.exe") uninstall --yes --delete-data
+          # minuta.exe cannot delete itself on Windows: a hidden PowerShell finishes once it has exited.
+          $deadline = (Get-Date).AddSeconds(90)
+          while (((Test-Path (Join-Path $bin "minuta.exe")) -or (Test-Path $tool)) -and (Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 1
+          }
+          if (Test-Path (Join-Path $bin "minuta.exe")) { throw "minuta.exe left behind" }
+          if (Test-Path $tool) { throw "tool environment left behind" }
+          if (Test-Path (Join-Path $env:LOCALAPPDATA "minuta")) { throw "data or app folder left behind" }
           if (Test-Path (Join-Path $env:APPDATA "minuta")) { throw "config left behind" }
           schtasks /Query /TN minuta 2>$null; if ($LASTEXITCODE -eq 0) { throw "scheduled task left behind" }
           exit 0

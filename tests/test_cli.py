@@ -8,6 +8,7 @@ import socket
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -540,6 +541,50 @@ def test_uninstall_keeps_meetings_when_config_and_data_share_a_folder(capsys, mo
     run(capsys, *SETUP)
     code, out = run(capsys, "uninstall", "--yes", "--delete-data", "--keep-tool")
     assert code == 0 and not shared.exists()
+
+
+def test_uninstall_removes_a_read_only_installer_checkout(capsys, monkeypatch, tmp_path):
+    """git checks out its objects read-only; on Windows a plain rmtree left the whole checkout behind."""
+    import stat
+
+    from minuta import service
+
+    monkeypatch.setattr(service.ServiceManager, "uninstall", lambda self: None)
+    app = tmp_path / "app"
+    (app / ".git" / "objects" / "ab").mkdir(parents=True)
+    (app / ".minuta-installer").touch()
+    obj = app / ".git" / "objects" / "ab" / "cdef"
+    obj.write_bytes(b"x")
+    obj.chmod(stat.S_IREAD)
+    run(capsys, *SETUP, "--app-dir", str(app))
+    code, _ = run(capsys, "uninstall", "--yes", "--keep-tool")
+    assert code == 0 and not app.exists()
+
+
+def test_windows_uninstall_script_quotes_paths():
+    script = cli.windows_uninstall_script(42, r"C:\it's\uv.exe", Path(r"C:\tools\minuta"), [])
+    assert "Wait-Process -Id 42" in script
+    assert "& 'C:\\it''s\\uv.exe' tool uninstall minuta" in script
+    assert "foreach ($d in @(@()))" in script
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the deferred uninstall runs PowerShell, only on Windows")
+def test_windows_uninstall_finishes_after_the_process_exits(tmp_path):
+    import stat
+
+    env = tmp_path / "tools" / "minuta"
+    env.mkdir(parents=True)
+    fake_uv = tmp_path / "uv.cmd"
+    fake_uv.write_text(f'@rmdir /s /q "{env}"\r\n', encoding="ascii")
+    leftover = tmp_path / "app"
+    (leftover / "sub").mkdir(parents=True)
+    (leftover / "sub" / "obj").write_bytes(b"x")
+    (leftover / "sub" / "obj").chmod(stat.S_IREAD)
+    done = subprocess.Popen([sys.executable, "-c", "pass"])
+    done.wait()
+    script = cli.windows_uninstall_script(done.pid, str(fake_uv), env, [leftover])
+    subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], check=True, timeout=120)
+    assert not env.exists() and not leftover.exists()
 
 
 def test_non_interactive_setup_never_opens_a_browser(capsys, monkeypatch):

@@ -181,6 +181,14 @@ STRINGS: dict[str, dict[str, str]] = {
         "es": "¿Borrar también todas las grabaciones y transcripciones en {path}?",
     },
     "uninstall.done": {"en": "minuta was removed.", "es": "Se quitó minuta."},
+    "uninstall.finishing": {
+        "en": "The minuta command is removed a few seconds after this finishes.",
+        "es": "El comando minuta se quita unos segundos después de que esto termine.",
+    },
+    "uninstall.finish_by_hand": {
+        "en": "To finish, run: uv tool uninstall minuta",
+        "es": "Para terminar, ejecuta: uv tool uninstall minuta",
+    },
     "uninstall.kept": {"en": "Recordings kept in {path}", "es": "Las grabaciones quedan en {path}"},
     "update.done": {
         "en": "Updated. Now reload the extension in the extensions page and reload any open Meet tab.",

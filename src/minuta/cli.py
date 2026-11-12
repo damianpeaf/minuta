@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import shutil
@@ -491,24 +492,28 @@ def cmd_uninstall(args) -> int:
         forget_secrets(opts, store)
     _remove_config(keep=[config_mod.meetings_dir(cfg), Path(cfg['general'].get('app_dir') or paths.default_app_dir())])
     logs = paths.log_dir()
-    shutil.rmtree(logs, ignore_errors=True)
+    paths.remove_tree(logs)
     if logs.parent.name == "minuta" and logs.parent.exists() and not any(logs.parent.iterdir()):
         logs.parent.rmdir()
+    leftovers: list[Path] = []
     if delete_data:
-        shutil.rmtree(data, ignore_errors=True)
+        paths.remove_tree(data)
+        leftovers.append(data)
         default = paths.default_data_dir()
         if default.exists() and not any(p for p in default.iterdir() if p.name != "app"):
-            shutil.rmtree(default, ignore_errors=True)
+            paths.remove_tree(default)
+            leftovers.append(default)
     else:
         print(t("uninstall.kept", path=data))
     app_dir = cfg["general"].get("app_dir")
     if app_dir and (Path(app_dir) / INSTALLER_MARKER).exists():
-        shutil.rmtree(app_dir, ignore_errors=True)
+        paths.remove_tree(Path(app_dir))
+        leftovers.append(Path(app_dir))
     for d in (paths.config_dir(), paths.default_data_dir()):
         if d.exists() and not any(d.iterdir()):
             d.rmdir()
     if not args.keep_tool:
-        _uninstall_tool()
+        _uninstall_tool([d for d in leftovers if d.exists()])
     print(t("uninstall.done"))
     return 0
 
@@ -522,30 +527,70 @@ def _remove_config(keep: list[Path]) -> None:
     root = cfg_dir.resolve()
     keep = [k.resolve() for k in keep]
     if not any(k == root or root in k.parents for k in keep):
-        shutil.rmtree(cfg_dir, ignore_errors=True)
+        paths.remove_tree(cfg_dir)
         return
     for child in cfg_dir.iterdir():
         c = child.resolve()
         if any(c == k or c in k.parents for k in keep):
             continue
         if child.is_dir() and not child.is_symlink():
-            shutil.rmtree(child, ignore_errors=True)
+            paths.remove_tree(child)
         else:
             child.unlink(missing_ok=True)
     if not any(cfg_dir.iterdir()):
         cfg_dir.rmdir()
 
 
-def _uninstall_tool() -> None:
+def _uninstall_tool(leftovers: list[Path]) -> None:
     """Remove the `uv tool` installation when we are running from one (not from a dev checkout)."""
     uv = shutil.which("uv")
     prefix = Path(sys.prefix).as_posix()
     if not uv or "/uv/tools/minuta" not in prefix.replace("\\", "/"):
         return
     if os.name == "nt":
-        print("To finish, run: uv tool uninstall minuta")
+        _uninstall_tool_after_exit(uv, Path(sys.prefix), leftovers)
+        print(t("uninstall.finishing"))
         return
     subprocess.run([uv, "tool", "uninstall", "minuta"], capture_output=True)
+
+
+def _ps_quote(value: str | Path) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def windows_uninstall_script(pid: int, uv: str, tool_env: Path, leftovers: list[Path]) -> str:
+    """PowerShell that waits for `pid` to exit, then runs `uv tool uninstall minuta` until the tool
+    environment is gone, and removes the folders the uninstall could not delete while running."""
+    folders = ", ".join(_ps_quote(d) for d in leftovers) or "@()"
+    return f"""$ErrorActionPreference = 'SilentlyContinue'
+Wait-Process -Id {pid} -Timeout 120
+for ($i = 0; $i -lt 30 -and (Test-Path -LiteralPath {_ps_quote(tool_env)}); $i++) {{
+  & {_ps_quote(uv)} tool uninstall minuta *> $null
+  if (Test-Path -LiteralPath {_ps_quote(tool_env)}) {{ Start-Sleep -Seconds 1 }}
+}}
+foreach ($d in @({folders})) {{
+  if (Test-Path -LiteralPath $d) {{ Remove-Item -LiteralPath $d -Recurse -Force }}
+}}
+"""
+
+
+def _uninstall_tool_after_exit(uv: str, tool_env: Path, leftovers: list[Path]) -> None:
+    """Windows does not let the running minuta.exe delete itself, so a hidden PowerShell finishes the job
+    once this process has exited."""
+    script = windows_uninstall_script(os.getpid(), uv, tool_env, leftovers)
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    cmd = ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
+           "-EncodedCommand", encoded]
+    base = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    breakaway = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0)
+    for flags in (base | breakaway, base):  # leaving the job keeps it alive if the terminal closes
+        try:
+            subprocess.Popen(cmd, creationflags=flags, close_fds=True, stdin=subprocess.DEVNULL,  # noqa: S603
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return
+        except OSError:
+            continue
+    print(t("uninstall.finish_by_hand"))
 
 
 def cmd_service(args) -> int:

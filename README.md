@@ -368,8 +368,8 @@ minuta uninstall --yes --delete-data    # no questions, delete everything
 ```
 
 It removes the background service, the configuration, the stored secrets, the logs and the
-installed source, and runs `uv tool uninstall minuta` (on Windows it prints that command for you
-to run). Then remove the extension from the extensions page. Copies already sent to destinations
+installed source, and runs `uv tool uninstall minuta`. On Windows the running `minuta.exe` cannot
+delete itself, so that last step runs in the background a few seconds after the command ends. Then remove the extension from the extensions page. Copies already sent to destinations
 are not touched.
 
 ## Security and privacy
