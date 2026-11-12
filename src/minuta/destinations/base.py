@@ -197,14 +197,67 @@ def _partial(path: Path) -> Path:
     return path.with_name(f".{path.name}.partial")
 
 
-def write_atomic(path: Path, text: str) -> None:
-    """Write through a temporary name, so a synced folder or a reader never sees half a file."""
+def _private_file(path: Path, private: bool) -> None:
+    if private and os.name == "posix":
+        os.chmod(path, 0o600)
+
+
+def write_atomic(path: Path, text: str, private: bool = False) -> None:
+    """Write through a temporary name, so a synced folder or a reader never sees half a file.
+    `private`: only the current user can read it (0600 on POSIX)."""
     tmp = _partial(path)
     tmp.write_text(text, encoding="utf-8")
+    _private_file(tmp, private)
     os.replace(tmp, path)
 
 
-def copy_atomic(src: Path, dst: Path) -> None:
+def copy_atomic(src: Path, dst: Path, private: bool = False) -> None:
     tmp = _partial(dst)
     shutil.copyfile(src, tmp)
+    _private_file(tmp, private)
     os.replace(tmp, dst)
+
+
+def make_dirs(path: Path, private: bool = False) -> Path:
+    """Create a folder and its missing parents. With `private`, the folders created here are only for
+    the current user (0700 on POSIX); folders that already existed are not touched."""
+    missing = []
+    p = path
+    while not p.exists() and p != p.parent:
+        missing.append(p)
+        p = p.parent
+    path.mkdir(parents=True, exist_ok=True)
+    if private and os.name == "posix":
+        for d in missing:
+            os.chmod(d, 0o700)
+    return path
+
+
+def is_private(options: dict) -> bool:
+    """Copies minuta writes outside its data folder are private unless `private = false`."""
+    value = options.get("private", True)
+    if isinstance(value, str):
+        return value.strip().lower() not in ("false", "no", "0", "off")
+    return bool(value)
+
+
+def meeting_folder_name(meeting_id: str, title: str | None, started_at: str | None, code: str | None = None) -> str:
+    """`YYYY-MM-DD HH-MM <title>` in local time. The Meet code, then the id, stand in for a missing title."""
+    from minuta.meetings import parse_time
+
+    when = parse_time(started_at) or _time_from_id(meeting_id)
+    stamp = when.astimezone().strftime("%Y-%m-%d %H-%M") if when else ""
+    label = safe_name(title, fallback="") if title and title != meeting_id else ""
+    label = label or safe_name(code, fallback="") or safe_name(meeting_id, fallback="")
+    return f"{stamp} {label}".strip() or "meeting"
+
+
+def _time_from_id(meeting_id: str) -> datetime | None:
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})", meeting_id or "")
+    if not m:
+        return None
+    y, mo, d, h, mi = (int(x) for x in m.groups())
+    try:
+        return datetime(y, mo, d, h, mi, tzinfo=timezone.utc)
+    except ValueError:
+        return None

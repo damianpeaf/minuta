@@ -14,7 +14,9 @@ from minuta.destinations.base import (
     PermanentError,
     Receipt,
     copy_atomic,
-    safe_name,
+    is_private,
+    make_dirs,
+    meeting_folder_name,
     write_atomic,
 )
 
@@ -23,8 +25,9 @@ class LocalDestination(Destination):
     """Keep meetings in the data folder, optionally copying them to another folder.
 
     Without `copy_to` the meeting stays where minuta recorded it and nothing is copied. With
-    `copy_to`, each meeting is copied to `<copy_to>/<id> <title>/`: point it at a folder synced by
-    Drive, Dropbox, iCloud or an Obsidian vault.
+    `copy_to`, each meeting is copied to `<copy_to>/<YYYY-MM-DD HH-MM> <title>/` (local time): point it
+    at a folder synced by Drive, Dropbox, iCloud or an Obsidian vault. The copies are private to the
+    current user (folders 0700, files 0600) unless `private = false`.
     """
 
     kind = "local"
@@ -48,21 +51,37 @@ class LocalDestination(Destination):
         return opts
 
     def check(self) -> CheckResult:
+        from minuta.i18n import t
+
         target = self.copy_to
         if target is None:
-            return CheckResult(True, "meetings stay in the data folder")
+            return CheckResult(True, t("local.in_place"))
         if target.exists() and not target.is_dir():
-            return CheckResult(False, f"{target} exists and is not a folder")
+            return CheckResult(False, t("local.not_a_folder", path=target))
         probe = target if target.exists() else next((p for p in target.parents if p.exists()), None)
         if probe is None or not os.access(probe, os.W_OK):
-            return CheckResult(False, f"cannot write to {target}")
-        return CheckResult(True, f"copies to {target}")
+            return CheckResult(False, t("local.cannot_write", path=target))
+        return CheckResult(True, t("local.copies_to", path=target))
 
     def _folder(self, meeting, previous: Receipt | None) -> Path:
+        """`2026-11-12 16-50 Title` in local time; a folder another meeting already took gets a number."""
         assert self.copy_to is not None
         if previous and previous.remote_id:
             return Path(previous.remote_id)
-        return self.copy_to / f"{meeting.id} {safe_name(meeting.title)}"
+        d = meeting.read()
+        base = meeting_folder_name(meeting.id, d.get("title"), d.get("started_at"), d.get("code"))
+        for n in range(1, 100):
+            folder = self.copy_to / (base if n == 1 else f"{base} ({n})")
+            if not folder.exists() or not any(folder.iterdir()) or self._owner(folder) == meeting.id:
+                return folder
+        return self.copy_to / f"{base} {meeting.id}"
+
+    @staticmethod
+    def _owner(folder: Path) -> str | None:
+        try:
+            return json.loads((folder / "meeting.json").read_text(encoding="utf-8")).get("id")
+        except (OSError, ValueError):
+            return None
 
     def send_meeting(self, meeting, parts: MeetingParts, previous: Receipt | None = None) -> Receipt:
         if self.copy_to is None:
@@ -70,16 +89,16 @@ class LocalDestination(Destination):
         ok = self.check()
         if not ok.ok:
             raise PermanentError(ok.message)
-        folder = self._folder(meeting, previous)
-        folder.mkdir(parents=True, exist_ok=True)
+        private = is_private(self.options)
+        folder = make_dirs(self._folder(meeting, previous), private)
         copied_audio = False
         if parts.audio is not None:
-            copy_atomic(parts.audio, folder / parts.audio.name)
+            copy_atomic(parts.audio, folder / parts.audio.name, private)
             copied_audio = True
         if parts.metadata is not None:
-            write_atomic(folder / "meeting.json", json.dumps(parts.metadata, ensure_ascii=False, indent=2))
+            write_atomic(folder / "meeting.json", json.dumps(parts.metadata, ensure_ascii=False, indent=2), private)
         for path in (parts.transcript or {}).values():
-            copy_atomic(path, folder / path.name)
+            copy_atomic(path, folder / path.name, private)
         return Receipt(remote_id=str(folder), url=folder.as_uri(),
                        audio=copied_audio or bool(previous and previous.audio))
 

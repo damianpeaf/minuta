@@ -158,7 +158,7 @@ def test_folder_name_uses_local_time_and_a_clean_title():
     name = meeting_folder_name("2026-02-02T09-00-00-000Z_x", "Plan: Q3 / review <final>?", "2026-02-02T09:00:00Z")
     from datetime import datetime, timezone
 
-    stamp = datetime(2026, 2, 2, 9, 0, tzinfo=timezone.utc).astimezone().strftime("%Y-%m-%d %H%M")
+    stamp = datetime(2026, 2, 2, 9, 0, tzinfo=timezone.utc).astimezone().strftime("%Y-%m-%d %H-%M")
     assert name == f"{stamp} Plan Q3 review final"
     # No title: the id; no started_at: the time inside the id.
     assert meeting_folder_name("2026-02-02T09-00-00-000Z_x", None, None) == f"{stamp} 2026-02-02T09-00-00-000Z_x"

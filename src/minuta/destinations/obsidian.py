@@ -6,6 +6,7 @@
     folder = "Meetings"           # inside the vault
     tags = ["meeting"]
     send = ["metadata", "transcript"]
+    private = true                # notes only you can read (0600); false keeps the system default
 
 The note gets YAML frontmatter (title, date, duration, Meet link, minuta id, tags) when it is
 created. Later deliveries only rewrite the block between the `minuta:transcript` markers, so
@@ -26,6 +27,8 @@ from minuta.destinations.base import (
     MeetingParts,
     PermanentError,
     Receipt,
+    is_private,
+    make_dirs,
     safe_name,
     write_atomic,
 )
@@ -174,6 +177,7 @@ class ObsidianDestination(Destination):
         else:
             title = _heading(data.get("title") or meeting.title)
             text = f"{self._frontmatter(meeting, data)}\n\n# {title}\n\n{block}\n"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        write_atomic(path, text)
+        private = is_private(self.options)
+        make_dirs(path.parent, private)
+        write_atomic(path, text, private)
         return Receipt(remote_id=str(path), url=path.as_uri())

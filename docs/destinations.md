@@ -49,8 +49,9 @@ destination is added; `config.toml` only keeps their name.
 ## local
 
 The `local` destination is created by `minuta setup`: meetings stay in the data folder. Add
-`copy_to` to also copy each meeting, raw files and audio, to `<copy_to>/<id> <title>/`, for example
-a folder synced by Drive, Dropbox or iCloud:
+`copy_to` to also copy each meeting, raw files and audio, to `<copy_to>/<date> <time> <title>/`
+(local time, like `2026-11-12 16-50 Weekly sync`; the Meet code when the call has no title), for
+example a folder synced by Drive, Dropbox or iCloud:
 
 ```bash
 minuta destinations add backup --type local --option copy_to=~/Dropbox/minuta
@@ -59,6 +60,10 @@ minuta destinations add backup --type local --option copy_to=~/Dropbox/minuta
 | Option | Default | |
 |---|---|---|
 | `copy_to` | none | Folder to copy meetings to. Without it nothing is copied. |
+| `private` | `true` | The folders and files minuta writes there are only for your user (0700 and 0600 on macOS and Linux), like the originals. `false` keeps the system's default permissions. `copy_to` itself is never changed. |
+
+The meeting's id stays in its `meeting.json`. Two meetings with the same name get `(2)`, `(3)`.
+Meetings copied before this naming keep their folder.
 
 A local destination with `copy_to` holds the audio, so `delete_local_audio_after_upload` may
 delete the recorded copy; `minuta transcribe` then reads it back from `copy_to`.
@@ -206,6 +211,7 @@ minuta destinations add notes --type obsidian --option vault=~/Documents/Vault -
 | `vault` | required | The vault folder. |
 | `folder` | `Meetings` | Inside the vault; it cannot point outside. |
 | `tags` | `meeting` | Comma-separated, or a TOML list. |
+| `private` | `true` | Notes (and the folder, when minuta creates it) only for your user: 0600 and 0700 on macOS and Linux. `false` keeps the system's default. |
 
 Each meeting becomes `<folder>/<date> <title>.md` with frontmatter (`title`, `date`,
 `duration_minutes`, `meet`, `minuta_id`, `tags`) and the transcript between

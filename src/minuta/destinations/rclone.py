@@ -34,7 +34,6 @@ import subprocess
 import tempfile
 import uuid
 from collections.abc import Callable
-from datetime import datetime, timezone
 from pathlib import Path
 
 from minuta.destinations.base import (
@@ -45,9 +44,10 @@ from minuta.destinations.base import (
     MeetingParts,
     PermanentError,
     Receipt,
+    meeting_folder_name,
     safe_name,
 )
-from minuta.meetings import AUDIO_NAMES, METADATA_KEYS, TRANSCRIPT_FILES, parse_time
+from minuta.meetings import AUDIO_NAMES, METADATA_KEYS, TRANSCRIPT_FILES
 from minuta.redact import redact
 
 log = logging.getLogger(__name__)
@@ -145,26 +145,6 @@ def validate_local_path(value, what: str) -> str:
     if v.startswith("-") or "\x00" in v:
         raise ValueError(f"{what} must be a path, got {value!r}")
     return str(Path(v).expanduser())
-
-
-def _time_from_id(meeting_id: str) -> datetime | None:
-    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})", meeting_id or "")
-    if not m:
-        return None
-    y, mo, d, h, mi = (int(x) for x in m.groups())
-    try:
-        return datetime(y, mo, d, h, mi, tzinfo=timezone.utc)
-    except ValueError:
-        return None
-
-
-def meeting_folder_name(meeting_id: str, title: str | None, started_at: str | None) -> str:
-    """`YYYY-MM-DD HHMM <title>` in local time; the id stands in for a missing title."""
-    when = parse_time(started_at) or _time_from_id(meeting_id)
-    stamp = when.astimezone().strftime("%Y-%m-%d %H%M") if when else ""
-    label = safe_name(title, fallback="") if title and title != meeting_id else ""
-    label = label or safe_name(meeting_id, fallback="")
-    return f"{stamp} {label}".strip() or "meeting"
 
 
 def sanitized_metadata(metadata: dict) -> dict:

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -113,3 +115,15 @@ def test_the_title_is_one_escaped_line_in_the_heading_and_the_frontmatter(tmp_pa
     assert 'title: "# Plan --- injected: true [click](https://evil.example) ![x](y) <b>"' in front
     heading = next(line for line in body.splitlines() if line.startswith("# "))
     assert heading == r"# \# Plan --- injected: true \[click\]\(https://evil.example\) \!\[x\]\(y\) \<b\>"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permissions")
+def test_notes_and_the_folder_minuta_creates_are_private(tmp_path, vault):
+    os.chmod(vault, 0o755)  # noqa: S103 - a typical shared folder
+    m = make_meeting(tmp_path)
+    r = dest(vault).send_meeting(m, MeetingParts(metadata={"id": m.id}))
+    assert stat.S_IMODE(Path(r.remote_id).stat().st_mode) == 0o600
+    assert stat.S_IMODE((vault / "Meetings").stat().st_mode) == 0o700
+    assert stat.S_IMODE(vault.stat().st_mode) == 0o755  # the vault itself is the user's
+    r = dest(vault, private=False, folder="Shared").send_meeting(m, MeetingParts(metadata={"id": m.id}))
+    assert stat.S_IMODE(Path(r.remote_id).stat().st_mode) != 0o600
