@@ -21,14 +21,23 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
+          version: "0.12.23"  # keep in step with the uv that wrote uv.lock and constraints.txt
           python-version: "3.12"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
-      - uses: FedericoCarboni/setup-ffmpeg@v3
+      - name: Install ffmpeg
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Linux) sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends ffmpeg ;;
+            macOS) HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install ffmpeg ;;
+            Windows) choco install ffmpeg -y --no-progress ;;
+          esac
+          ffmpeg -version | head -n 1
       - name: Install
         run: uv sync --locked
       - name: Lint
@@ -40,11 +49,20 @@ jobs:
     name: extension in Chromium
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
+          version: "0.12.23"  # keep in step with the uv that wrote uv.lock and constraints.txt
           python-version: "3.12"
-      - uses: FedericoCarboni/setup-ffmpeg@v3
+      - name: Install ffmpeg
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Linux) sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends ffmpeg ;;
+            macOS) HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install ffmpeg ;;
+            Windows) choco install ffmpeg -y --no-progress ;;
+          esac
+          ffmpeg -version | head -n 1
       - run: uv sync --locked
       - run: uv run playwright install --with-deps chromium
       - run: uv run pytest -m "browser and not slow"
@@ -60,8 +78,16 @@ jobs:
       MINUTA_REPO_URL: ${{ github.workspace }}
       MINUTA_EXTRAS: ""
     steps:
-      - uses: actions/checkout@v4
-      - uses: FedericoCarboni/setup-ffmpeg@v3
+      - uses: actions/checkout@v7
+      - name: Install ffmpeg
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Linux) sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends ffmpeg ;;
+            macOS) HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install ffmpeg ;;
+            Windows) choco install ffmpeg -y --no-progress ;;
+          esac
+          ffmpeg -version | head -n 1
       - name: Install from this checkout and set up
         run: sh install.sh --non-interactive --name CI --no-browser --skip-extension
       - name: Use it
@@ -88,8 +114,16 @@ jobs:
       MINUTA_REPO_URL: ${{ github.workspace }}
       MINUTA_EXTRAS: ""
     steps:
-      - uses: actions/checkout@v4
-      - uses: FedericoCarboni/setup-ffmpeg@v3
+      - uses: actions/checkout@v7
+      - name: Install ffmpeg
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Linux) sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends ffmpeg ;;
+            macOS) HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install ffmpeg ;;
+            Windows) choco install ffmpeg -y --no-progress ;;
+          esac
+          ffmpeg -version | head -n 1
       - name: Install from this checkout and set up
         shell: pwsh
         run: ./install.ps1 --non-interactive --name CI --no-browser --skip-extension
