@@ -66,18 +66,20 @@ def cmd_setup(args) -> int:
 
 
 def cmd_serve(args) -> int:
+    # Stopping is a clean exit: launchd (KeepAlive on failure) would restart a server killed by SIGTERM.
+    # Set first, so a stop while the server is still starting is clean too.
+    signal.signal(signal.SIGTERM, _stop_on_sigterm)
     if args.home:
         os.environ["MINUTA_HOME"] = str(Path(args.home).expanduser())
-    from minuta.server import Server
     from minuta.service import pid_file
 
-    cfg = config_mod.load()
-    setup_logging(logfile=paths.log_dir() / "server.log")
-    srv = Server(cfg, port=args.port)
-    paths.write_private(pid_file(), str(os.getpid()))
-    # Stopping is a clean exit: launchd (KeepAlive on failure) would restart a server killed by SIGTERM.
-    signal.signal(signal.SIGTERM, _stop_on_sigterm)
     try:
+        from minuta.server import Server
+
+        cfg = config_mod.load()
+        setup_logging(logfile=paths.log_dir() / "server.log")
+        srv = Server(cfg, port=args.port)
+        paths.write_private(pid_file(), str(os.getpid()))
         srv.serve_forever()
     except KeyboardInterrupt:
         pass

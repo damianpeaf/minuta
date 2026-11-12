@@ -604,12 +604,13 @@ def test_serve_exits_cleanly_on_sigterm(home):
     assert run_.returncode == 0
     proc = subprocess.Popen([sys.executable, "-m", "minuta", "serve", "--port", "0"], stderr=subprocess.PIPE)
     try:
-        end = time.time() + 15
-        while not (paths.config_dir() / "server.pid").exists() and time.time() < end:
+        end = time.time() + 60  # a cold start on a CI runner can take long
+        while not (paths.config_dir() / "server.pid").exists() and time.time() < end and proc.poll() is None:
             time.sleep(0.1)
-        time.sleep(0.5)
+        assert (paths.config_dir() / "server.pid").exists(), proc.stderr.read() if proc.poll() is not None else ""
         proc.send_signal(signal.SIGTERM)
-        assert proc.wait(timeout=10) == 0
+        code = proc.wait(timeout=10)
+        assert code == 0, proc.stderr.read()
     finally:
         proc.kill()
 
