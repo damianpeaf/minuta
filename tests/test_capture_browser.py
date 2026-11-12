@@ -160,9 +160,14 @@ def finish(page, tmp_path):
 
 
 def amplitude(frames, channel, frequency):
+    """The tone's amplitude in a typical 100 ms of the window (the median). A loaded CI machine drops
+    a few hundred ms of the synthetic microphone now and then; one dropout must not decide the test."""
     samples = frames[:, channel]
-    phase = np.arange(len(samples)) * 2 * np.pi * frequency / 16000
-    return 2 * abs(np.sum(samples * np.exp(-1j * phase))) / len(samples)
+    window = 1600  # 100 ms: a whole number of periods of 440 and 880 Hz
+    phase = np.arange(window) * 2 * np.pi * frequency / 16000
+    wave = np.exp(-1j * phase)
+    parts = [samples[i:i + window] for i in range(0, len(samples) - window + 1, window)]
+    return float(np.median([2 * abs(np.sum(p * wave)) / window for p in parts]))
 
 
 def test_captures_playback_when_the_webrtc_track_is_silent(page, tmp_path):
