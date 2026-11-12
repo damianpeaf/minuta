@@ -550,7 +550,7 @@ def _uninstall_tool(leftovers: list[Path]) -> None:
     if not uv or "/uv/tools/minuta" not in prefix.replace("\\", "/"):
         return
     if os.name == "nt":
-        _uninstall_tool_after_exit(uv, Path(sys.prefix), leftovers)
+        _uninstall_tool_after_exit(uv, leftovers)
         print(t("uninstall.finishing"))
         return
     subprocess.run([uv, "tool", "uninstall", "minuta"], capture_output=True)
@@ -560,26 +560,45 @@ def _ps_quote(value: str | Path) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def windows_uninstall_script(pid: int, uv: str, tool_env: Path, leftovers: list[Path]) -> str:
-    """PowerShell that waits for `pid` to exit, then runs `uv tool uninstall minuta` until the tool
-    environment is gone, and removes the folders the uninstall could not delete while running."""
-    folders = ", ".join(_ps_quote(d) for d in leftovers) or "@()"
+def _ps_list(values: list[Path]) -> str:
+    return "@(" + ", ".join(_ps_quote(v) for v in values) + ")"
+
+
+def windows_uninstall_script(pid: int, uv: str, targets: list[Path], leftovers: list[Path], log: Path) -> str:
+    """PowerShell that waits for `pid` and the minuta.exe launcher in front of it to exit, then runs
+    `uv tool uninstall minuta` until the tool environment and its commands (`targets`) are gone, and
+    removes the folders the uninstall could not delete while running. The log stays only on failure."""
     return f"""$ErrorActionPreference = 'SilentlyContinue'
+$targets = {_ps_list(targets)}
+$log = {_ps_quote(log)}
+"waiting for {pid}" | Out-File -LiteralPath $log -Encoding utf8
 Wait-Process -Id {pid} -Timeout 120
-for ($i = 0; $i -lt 30 -and (Test-Path -LiteralPath {_ps_quote(tool_env)}); $i++) {{
-  & {_ps_quote(uv)} tool uninstall minuta *> $null
-  if (Test-Path -LiteralPath {_ps_quote(tool_env)}) {{ Start-Sleep -Seconds 1 }}
+Get-Process | Where-Object {{ $targets -contains $_.Path }} | Wait-Process -Timeout 30
+for ($i = 0; $i -lt 30 -and ($targets | Where-Object {{ Test-Path -LiteralPath $_ }}); $i++) {{
+  & {_ps_quote(uv)} tool uninstall minuta *>> $log
+  foreach ($f in $targets) {{
+    if (Test-Path -LiteralPath $f) {{ Remove-Item -LiteralPath $f -Recurse -Force *>> $log }}
+  }}
+  if ($targets | Where-Object {{ Test-Path -LiteralPath $_ }}) {{ Start-Sleep -Seconds 1 }}
 }}
-foreach ($d in @({folders})) {{
-  if (Test-Path -LiteralPath $d) {{ Remove-Item -LiteralPath $d -Recurse -Force }}
+foreach ($d in {_ps_list(leftovers)}) {{
+  if (Test-Path -LiteralPath $d) {{ Remove-Item -LiteralPath $d -Recurse -Force *>> $log }}
+}}
+if (-not ($targets + {_ps_list(leftovers)} | Where-Object {{ Test-Path -LiteralPath $_ }})) {{
+  Remove-Item -LiteralPath $log -Force
 }}
 """
 
 
-def _uninstall_tool_after_exit(uv: str, tool_env: Path, leftovers: list[Path]) -> None:
+def _uninstall_tool_after_exit(uv: str, leftovers: list[Path]) -> None:
     """Windows does not let the running minuta.exe delete itself, so a hidden PowerShell finishes the job
     once this process has exited."""
-    script = windows_uninstall_script(os.getpid(), uv, tool_env, leftovers)
+    targets = [Path(sys.prefix)]
+    r = subprocess.run([uv, "tool", "dir", "--bin"], capture_output=True, text=True)
+    if r.returncode == 0 and r.stdout.strip():
+        targets += [Path(r.stdout.strip()) / name for name in ("minuta.exe", "minuta-server.exe")]
+    log = Path(os.environ.get("TEMP") or Path.home()) / "minuta-uninstall.log"
+    script = windows_uninstall_script(os.getpid(), uv, targets, leftovers, log)
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     cmd = ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
            "-EncodedCommand", encoded]

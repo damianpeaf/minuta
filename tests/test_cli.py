@@ -562,10 +562,10 @@ def test_uninstall_removes_a_read_only_installer_checkout(capsys, monkeypatch, t
 
 
 def test_windows_uninstall_script_quotes_paths():
-    script = cli.windows_uninstall_script(42, r"C:\it's\uv.exe", Path(r"C:\tools\minuta"), [])
+    script = cli.windows_uninstall_script(42, r"C:\it's\uv.exe", [Path(r"C:\tools\minuta")], [], Path("log"))
     assert "Wait-Process -Id 42" in script
     assert "& 'C:\\it''s\\uv.exe' tool uninstall minuta" in script
-    assert "foreach ($d in @(@()))" in script
+    assert "$targets = @('C:\\tools\\minuta')" in script
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="the deferred uninstall runs PowerShell, only on Windows")
@@ -576,15 +576,19 @@ def test_windows_uninstall_finishes_after_the_process_exits(tmp_path):
     env.mkdir(parents=True)
     fake_uv = tmp_path / "uv.cmd"
     fake_uv.write_text(f'@rmdir /s /q "{env}"\r\n', encoding="ascii")
+    command = tmp_path / "bin" / "minuta.exe"  # a command uv did not remove: the script deletes it
+    command.parent.mkdir()
+    command.write_bytes(b"x")
     leftover = tmp_path / "app"
     (leftover / "sub").mkdir(parents=True)
     (leftover / "sub" / "obj").write_bytes(b"x")
     (leftover / "sub" / "obj").chmod(stat.S_IREAD)
     done = subprocess.Popen([sys.executable, "-c", "pass"])
     done.wait()
-    script = cli.windows_uninstall_script(done.pid, str(fake_uv), env, [leftover])
+    log = tmp_path / "uninstall.log"
+    script = cli.windows_uninstall_script(done.pid, str(fake_uv), [env, command], [leftover], log)
     subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], check=True, timeout=120)
-    assert not env.exists() and not leftover.exists()
+    assert not env.exists() and not command.exists() and not leftover.exists() and not log.exists()
 
 
 def test_non_interactive_setup_never_opens_a_browser(capsys, monkeypatch):

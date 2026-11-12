@@ -146,6 +146,8 @@ jobs:
           while (((Test-Path (Join-Path $bin "minuta.exe")) -or (Test-Path $tool)) -and (Get-Date) -lt $deadline) {
             Start-Sleep -Seconds 1
           }
+          $log = Join-Path $env:TEMP "minuta-uninstall.log"  # kept only when something could not be removed
+          if (Test-Path $log) { Get-Content $log }
           if (Test-Path (Join-Path $bin "minuta.exe")) { throw "minuta.exe left behind" }
           if (Test-Path $tool) { throw "tool environment left behind" }
           if (Test-Path (Join-Path $env:LOCALAPPDATA "minuta")) { throw "data or app folder left behind" }
