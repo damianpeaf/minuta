@@ -592,6 +592,20 @@ def test_windows_uninstall_finishes_after_the_process_exits(tmp_path):
     assert not env.exists() and not command.exists() and not leftover.exists() and not log.exists()
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="the deferred uninstall runs PowerShell, only on Windows")
+def test_the_detached_powershell_outlives_the_process_that_started_it(tmp_path):
+    marker = tmp_path / "ran"
+    script = tmp_path / "later.ps1"
+    script.write_text(f"Start-Sleep -Seconds 3\nSet-Content -LiteralPath '{marker}' -Value ok\n", encoding="utf-8")
+    starter = ("from pathlib import Path; from minuta.cli import start_detached_powershell as start; "
+               f"assert start(Path({str(script)!r}))")
+    subprocess.run([sys.executable, "-c", starter], check=True, timeout=120)
+    end = time.time() + 60
+    while not marker.exists() and time.time() < end:
+        time.sleep(0.5)
+    assert marker.exists()
+
+
 def test_non_interactive_setup_never_opens_a_browser(capsys, monkeypatch):
     from minuta import browser
 

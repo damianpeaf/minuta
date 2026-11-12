@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import os
 import shutil
@@ -588,6 +587,7 @@ foreach ($d in {_ps_list(leftovers)}) {{
 if (-not ($targets + {_ps_list(leftovers)} | Where-Object {{ Test-Path -LiteralPath $_ }})) {{
   Remove-Item -LiteralPath $log -Force
 }}
+if ($PSCommandPath) {{ Remove-Item -LiteralPath $PSCommandPath -Force }}
 """
 
 
@@ -598,21 +598,31 @@ def _uninstall_tool_after_exit(uv: str, leftovers: list[Path]) -> None:
     r = subprocess.run([uv, "tool", "dir", "--bin"], capture_output=True, text=True)
     if r.returncode == 0 and r.stdout.strip():
         targets += [Path(r.stdout.strip()) / name for name in ("minuta.exe", "minuta-server.exe")]
-    log = Path(os.environ.get("TEMP") or Path.home()) / "minuta-uninstall.log"
-    script = windows_uninstall_script(os.getpid(), uv, targets, leftovers, log)
-    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
-    cmd = ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
-           "-EncodedCommand", encoded]
-    base = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    breakaway = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0)
-    for flags in (base | breakaway, base):  # leaving the job keeps it alive if the terminal closes
-        try:
-            subprocess.Popen(cmd, creationflags=flags, close_fds=True, stdin=subprocess.DEVNULL,  # noqa: S603
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return
-        except OSError:
-            continue
-    print(t("uninstall.finish_by_hand"))
+    temp = Path(os.environ.get("TEMP") or Path.home())
+    script = temp / f"minuta-uninstall-{os.getpid()}.ps1"
+    script.write_text(windows_uninstall_script(os.getpid(), uv, targets, leftovers, temp / "minuta-uninstall.log"),
+                      encoding="utf-8-sig")
+    if not start_detached_powershell(script):
+        script.unlink(missing_ok=True)
+        print(t("uninstall.finish_by_hand"))
+
+
+def start_detached_powershell(script: Path) -> bool:
+    """Run a PowerShell script hidden, in a process that outlives this one. It is started through WMI:
+    a child of ours would sit in the job of the minuta.exe launcher, which ends its processes with it."""
+    command_line = ("powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden "
+                    f'-File "{script}"')
+    create = ("$ErrorActionPreference = 'Stop'; $c = Get-CimClass Win32_ProcessStartup; "
+              "$si = New-CimInstance -CimClass $c -ClientOnly -Property @{ShowWindow = [uint16]0}; "
+              "$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create "
+              f"-Arguments @{{CommandLine = {_ps_quote(command_line)}; ProcessStartupInformation = $si}}; "
+              "if ($r.ReturnValue -eq 0) { exit 0 } else { exit 1 }")
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", create],
+                           capture_output=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return r.returncode == 0
 
 
 def cmd_service(args) -> int:
