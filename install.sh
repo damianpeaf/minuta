@@ -92,13 +92,15 @@ main() {
   touch "$APP_DIR/.minuta-installer"
 
   # 3. the tool, with the versions pinned in uv.lock (exported to constraints.txt)
-  SPEC="$APP_DIR"
-  [ -n "$EXTRAS" ] && SPEC="${APP_DIR}[${EXTRAS}]"
+  # From inside the checkout with relative paths: uv splits a --constraints path at spaces
+  # ("Application Support" on macOS).
+  SPEC="."
+  [ -n "$EXTRAS" ] && SPEC=".[${EXTRAS}]"
   say "installing the minuta command (extras: ${EXTRAS:-none})"
   if [ -f "$APP_DIR/constraints.txt" ]; then
-    uv tool install --force --reinstall --python "$PYTHON_VERSION" --constraints "$APP_DIR/constraints.txt" "$SPEC"
+    (cd "$APP_DIR" && uv tool install --force --reinstall --python "$PYTHON_VERSION" --constraints constraints.txt "$SPEC")
   else  # a release from before constraints.txt
-    uv tool install --force --reinstall --python "$PYTHON_VERSION" "$SPEC"
+    (cd "$APP_DIR" && uv tool install --force --reinstall --python "$PYTHON_VERSION" "$SPEC")
   fi
   BIN_DIR="$(uv tool dir --bin)"
   MINUTA="$BIN_DIR/minuta"

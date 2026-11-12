@@ -407,12 +407,13 @@ def cmd_update(args) -> int:
         print("uv is not installed", file=sys.stderr)
         return 1
     extras = g.get("install_extras", "local")
-    spec = f"{app}[{extras}]" if extras else str(app)
+    spec = f".[{extras}]" if extras else "."
     python = os.environ.get("MINUTA_PYTHON") or DEFAULT_PYTHON
     argv = [uv, "tool", "install", "--force", "--reinstall", "--python", python]
     if (app / "constraints.txt").exists():  # the versions pinned in uv.lock
-        argv += ["--constraints", str(app / "constraints.txt")]
-    r = subprocess.run([*argv, spec], text=True)
+        argv += ["--constraints", "constraints.txt"]
+    # Relative paths from inside the checkout: uv splits a --constraints path at spaces.
+    r = subprocess.run([*argv, spec], text=True, cwd=app)
     if r.returncode != 0:
         return r.returncode
     if not args.no_restart:

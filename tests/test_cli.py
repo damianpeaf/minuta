@@ -462,7 +462,8 @@ def test_update_follows_the_installed_tag_and_pins_the_lock(capsys, monkeypatch,
     git = [c[3:] for c in calls if c[0] == "git"]
     assert git == [["fetch", "--depth", "1", "origin", "v1.2.0"], ["reset", "--hard", "FETCH_HEAD"]]
     install = next(c for c in calls if c[1:3] == ["tool", "install"])
-    assert install[install.index("--constraints") + 1] == str(app / "constraints.txt")
+    assert install[install.index("--constraints") + 1] == "constraints.txt"  # relative: uv splits paths at spaces
+    assert install[-1].startswith(".")
     # A checkout of the user's own (no installer marker) is only fast-forwarded, never reset.
     (app / ".minuta-installer").unlink()
     calls.clear()

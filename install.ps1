@@ -84,14 +84,17 @@ if (Get-Command git -ErrorAction SilentlyContinue) {
 New-Item -ItemType File -Force -Path (Join-Path $AppDir ".minuta-installer") | Out-Null
 
 # 3. the tool, with the versions pinned in uv.lock (exported to constraints.txt)
-$Spec = if ($Extras) { "$AppDir[$Extras]" } else { $AppDir }
+# From inside the checkout with relative paths: uv splits a --constraints path at spaces.
+$Spec = if ($Extras) { ".[$Extras]" } else { "." }
 Say "installing the minuta command (extras: $(if ($Extras) { $Extras } else { 'none' }))"
-$Constraints = Join-Path $AppDir "constraints.txt"
-if (Test-Path $Constraints) {
-    uv tool install --force --reinstall --python $PythonVersion --constraints $Constraints $Spec
-} else {  # a release from before constraints.txt
-    uv tool install --force --reinstall --python $PythonVersion $Spec
-}
+Push-Location $AppDir
+try {
+    if (Test-Path "constraints.txt") {
+        uv tool install --force --reinstall --python $PythonVersion --constraints constraints.txt $Spec
+    } else {  # a release from before constraints.txt
+        uv tool install --force --reinstall --python $PythonVersion $Spec
+    }
+} finally { Pop-Location }
 if ($LASTEXITCODE -ne 0) { throw "uv tool install failed" }
 $BinDir = (uv tool dir --bin).Trim()
 $Minuta = Join-Path $BinDir "minuta.exe"
