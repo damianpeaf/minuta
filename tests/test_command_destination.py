@@ -120,7 +120,8 @@ def test_minimal_environment_without_minuta_secrets(tmp_path, recorder, monkeypa
                         "MINUTA_EVENT", "MINUTA_MEETING_ID", "MINUTA_MEETING_DIR", "MINUTA_DESTINATION",
                         "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "TEMP", "TMP", "USERPROFILE",
                         "USERNAME", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA",
-                        "PROGRAMFILES", "PROGRAMFILES(X86)", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE"}
+                        "PROGRAMFILES", "PROGRAMFILES(X86)", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
+                        "__CF_USER_TEXT_ENCODING"}  # macOS adds this one to every process it starts
 
 
 # --- failures ----------------------------------------------------------------------------
