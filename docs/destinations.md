@@ -407,6 +407,8 @@ class Destination(ABC):
 
     def __init__(self, name: str, options: dict, secrets: SecretStore | None = None): ...
     @classmethod
+    def form(cls, name: str, known: dict, secrets: SecretStore | None = None) -> list[Field]: ...
+    @classmethod
     def configure(cls, name: str, options: dict, prompter: Prompter | None = None,
                   secrets: SecretStore | None = None) -> dict | None: ...
     def check(self) -> CheckResult: ...
@@ -429,15 +431,23 @@ class Destination(ABC):
 
 - **`check()` has no side effects.** Validate options and that credentials exist. Adding a
   destination and `minuta destinations test` call it.
-- **`configure()` runs once, when the destination is added.** `minuta destinations add` and
-  `minuta setup` both call it, through `minuta.setup.add_destination()`, before `check()`. It gets
-  the options given so far (secrets still in plain text) and asks for what is missing through
-  `prompter` (`text`, `password`, `path`, `select`, `confirm`). `prompter` is `None` when nobody can
-  answer: then it must not ask, and `check()` reports what is missing. Unlike `check()` it may
+- **Questions are data: `form()`.** It returns the questions still missing, given what is `known`
+  (the options plus earlier answers), as `minuta.forms.Field(key, kind, label, ...)`: `kind` is
+  `text`, `secret`, `bool`, `select` or `path`; `label` and `help` are keys of `i18n.py` (or plain
+  text); `default`, `choices`, `required` and `validate` (a function that returns the clean value or
+  raises `ValueError`) complete it. Return an empty list when nothing is missing, and put a question
+  that depends on an answer in a later call. The terminal asks the fields with questionary and the
+  extension's minuta page shows them as a form, with the same validation, so do not ask anything
+  in `configure()` yourself. Keys that start with `_` are answers that are not options (Notion's
+  "existing or new database"): turn them into options in `configure()` and drop them.
+- **`configure()` runs once, when the destination is added.** `minuta destinations add`,
+  `minuta setup` and the minuta page call it, through `minuta.setup.add_destination()`, before
+  `check()`. It gets the options given so far (secrets still in plain text) and a `prompter`;
+  `cls.ask(name, options, prompter, secrets)` returns them with the answers to `form()` (with
+  `prompter` `None`, nothing is asked and `check()` reports what is missing). Unlike `check()` it may
   create things on the remote side, such as the Notion database. It returns the options to save
   (secret options still in them are moved to the keyring afterwards), returns `None` to cancel, or
-  raises `DestinationError` or `ValueError` with a message. The default returns the options
-  unchanged.
+  raises `DestinationError` or `ValueError` with a message. The default returns `cls.ask(...)`.
 - **Sends are idempotent.** `previous` is the receipt of an earlier successful step for this meeting
   (for `send_transcript`, the transcript receipt or else the meeting receipt). Use
   `previous.remote_id` to update the same remote object instead of creating another one.
@@ -473,7 +483,7 @@ Install it into minuta's environment with `uv tool install --with minuta-mydest 
 ### A complete example
 
 The built-in adapters are short and cover the whole interface:
-[`webhook.py`](../src/minuta/destinations/webhook.py) (secrets, questions in `configure()`,
+[`webhook.py`](../src/minuta/destinations/webhook.py) (secrets, questions in `form()`,
 permanent vs retryable errors, idempotent sends), [`obsidian.py`](../src/minuta/destinations/obsidian.py) (updating the same remote
 object through the previous receipt) and [`local.py`](../src/minuta/destinations/local.py)
 (audio and `fetch_audio`). Their tests, `tests/test_webhook.py` and `tests/test_obsidian.py`, are

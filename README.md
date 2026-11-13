@@ -205,12 +205,48 @@ the meeting is closed after 90 seconds without audio.
 | Don't record this call | Asks for confirmation, then deletes what was recorded and stops. Nothing is kept. |
 
 The popup also shows the last meeting (saving, transcribed, or a warning), the recording mode
-(which you can change there) and the server port.
+(which you can change there), the server port and **Open minuta**, which opens the minuta page.
 Serious problems also show as a browser notification: no microphone, Meet's mute button not found,
 the others' voices not being recorded, or the minuta app not answering (the extension then keeps
 up to about three hours of audio in memory until the app is back).
 
-**The command line.** `minuta` with no arguments opens a menu. Every action is also a command:
+### From the browser
+
+**Open minuta** in the popup opens a page of the extension, in a tab, that does what the `minuta`
+menu does, against the same local server and in the language of your configuration:
+
+| Section | What you can do |
+|---|---|
+| Meetings | The meetings, newest first, with date, title, length, status and whether they have a transcript; *Retry failed deliveries*. Open one to see its details, deliveries and transcript, open its folder or transcript with the system's app, and transcribe it: pick the engine (each with its time, and its cost for a paid one, which asks before spending) and watch each step and a progress bar. |
+| Destinations | The destinations, with what they send, where, and whether their secrets are saved (never the secrets). Check one, send it a test, turn it off or on, remove it, or add one with the same questions the terminal asks, as a form. |
+| Settings | Recording mode, when to transcribe, engine and model, spending cap, Vercel AI Gateway key, language and the names in transcripts. |
+| Status | What `minuta status` and `minuta doctor` show, with a button to fix what can be fixed from there (settings, destinations, pairing). |
+
+```text
+minuta    Meetings   Destinations   Settings   Status
+
+Weekly review
+Date        Jun 1, 2026, 2:30 PM
+Length      12 s
+Status      ready
+[Open the folder]  [Open the transcript]
+
+Transcribe
+Transcribe with  [local (tiny): free, about 4 s  v]  [Transcribe again]
+  ok Audio ready
+  ok Model tiny loaded
+  Transcribing  [==========------]
+```
+
+Transcriptions and retries run in the background service as jobs, one transcription at a time:
+start one from the page and follow it in the terminal, or the other way round. While the service
+runs, `minuta transcribe` and `minuta retry` hand their work to it too, and show the same steps.
+Creating a new rclone remote (rclone signs you in to the cloud in a terminal) and pairing codes stay
+in the terminal: the page asks for the code `minuta pair` prints, as the popup does.
+
+### The command line
+
+`minuta` with no arguments opens a menu. Every action is also a command:
 
 Each action prints a header line and a separator, so one result never runs into the next; Quit
 leaves. Long steps show what is happening: a spinner with the step's name, and a bar with the
@@ -484,6 +520,10 @@ are not touched.
 - Nothing leaves your computer except what the destinations you enable send, and the audio sent to
   Vercel AI Gateway if you choose that engine. The local model is downloaded once from Hugging Face.
 - `rclone` and `command` run programs with an argument list, never through a shell.
+- The minuta page is part of the extension: it uses the same token and the same server. Secrets
+  typed there (a destination's token, the API key) go to the secret store; the server never sends
+  them back, only whether one is saved. It can open a meeting's folder or transcript, never another
+  path, and loads nothing from the internet.
 
 Threat model and how to report a vulnerability: [SECURITY.md](SECURITY.md).
 

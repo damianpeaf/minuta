@@ -28,6 +28,14 @@ Do not attach real recordings or transcripts to a report. A synthetic example is
   token requests from other extension origins are refused.
 - **Secrets in logs and files.** Secrets never go in `config.toml`; every secret read or written is
   masked in logs, as are common credential shapes.
+- **The minuta page.** The extension's own page (`app.html`) uses the paired extension's token and
+  passes the same checks. It can change settings, add or remove destinations and start
+  transcriptions, so the token is as sensitive as before. Secrets can be sent to the server but no
+  endpoint returns one (only whether it is saved); job errors are redacted. The server opens only a
+  meeting's own folder or transcript with the system's app, never a path from the request. Bodies of
+  these endpoints are at most 64 KB. The page runs under a content security policy that loads
+  nothing remote and connects only to `127.0.0.1`, and writes data with `textContent`. A new pairing
+  code still comes only from the terminal.
 - **Destinations.** `rclone` and `command` run programs with an argument list, never through a
   shell, and validate paths. The `command` destination passes a short allowlist of environment
   variables and never a variable whose value is a secret. Webhooks are signed (HMAC-SHA256 with a
