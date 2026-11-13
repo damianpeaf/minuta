@@ -37,6 +37,7 @@ function load({ serverUp = true, stored = { port: 47321, token: TOKEN }, validTo
         get: async (keys) => Object.fromEntries(keys.filter((k) => k in h.storage).map((k) => [k, h.storage[k]])),
         set: async (o) => { Object.assign(h.storage, o); },
       },
+      onChanged: event('storage'),
     },
   };
   const reply = (status, body) => ({ ok: status < 400, status, json: async () => body });
@@ -315,6 +316,23 @@ const scenarios = {
     h.msg(hb({ mode: 'ask' }), 5);
     await h.flush();
     assert.ok(h.cleared.includes(second.id));
+  },
+
+  async a_token_from_the_minuta_page_is_picked_up() {
+    // The page (app.html) pairs again and stores the token; the service worker uses it at once.
+    const h = load({ stored: { port: 47321, token: 'old-token' } });
+    h.msg(hb());
+    await h.flush();
+    const port = h.connect();
+    await h.flush();
+    assert.equal(h.lastView(port).paired, false);
+    h.storage.token = TOKEN;
+    h.listeners.storage({ token: { newValue: TOKEN } }, 'local');
+    await h.flush();
+    h.msg(hb());
+    await h.flush();
+    assert.equal(h.lastView(port).paired, true);
+    assert.equal(h.sent.at(-1).type, 'heartbeat');
   },
 
   async closed_tab_is_forgotten() {

@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>minuta</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <a class="skip" href="#main" data-t="web.skip">Skip to content</a>
+  <header class="top">
+    <span class="brand">minuta</span>
+    <nav aria-label="minuta" id="nav">
+      <a href="#meetings" data-section="meetings" data-t="web.nav.meetings">Meetings</a>
+      <a href="#destinations" data-section="destinations" data-t="web.nav.destinations">Destinations</a>
+      <a href="#settings" data-section="settings" data-t="web.nav.settings">Settings</a>
+      <a href="#status" data-section="status" data-t="web.nav.status">Status</a>
+    </nav>
+  </header>
+
+  <main id="main" tabindex="-1">
+    <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+
+    <section id="offline" class="panel" hidden>
+      <h1 data-t="web.offline_title">minuta is not answering</h1>
+      <p id="offline-text"></p>
+      <button id="offline-retry" type="button" data-t="web.try_again">Try again</button>
+    </section>
+
+    <section id="pair" class="panel" hidden aria-labelledby="pair-title">
+      <h1 id="pair-title" data-t="web.pair_title">Pair this browser</h1>
+      <p data-t="web.pair_help">Run `minuta pair` in a terminal and type the code it shows.</p>
+      <form id="pair-form" class="row">
+        <label for="pair-code" class="sr-only" data-t="pair.code_label">Pairing code</label>
+        <input id="pair-code" inputmode="numeric" autocomplete="off" placeholder="123-456" maxlength="7" required>
+        <button type="submit" data-t="web.pair">Pair</button>
+      </form>
+      <p id="pair-error" class="error" role="alert" hidden></p>
+    </section>
+
+    <section id="meetings" class="view" hidden aria-labelledby="meetings-title">
+      <div class="view-head">
+        <h1 id="meetings-title" data-t="web.nav.meetings">Meetings</h1>
+        <div class="actions">
+          <label class="check"><input type="checkbox" id="show-discarded"> <span data-t="web.show_discarded">Show discarded</span></label>
+          <button id="retry-all" type="button" data-t="menu.retry">Retry failed deliveries</button>
+        </div>
+      </div>
+      <div id="retry-progress" class="job" hidden></div>
+      <div class="table-wrap">
+        <table id="meetings-table">
+          <thead><tr>
+            <th scope="col" data-t="list.col.when">Date</th>
+            <th scope="col" data-t="list.col.title">Title</th>
+            <th scope="col" data-t="list.col.duration">Length</th>
+            <th scope="col" data-t="list.col.status">Status</th>
+            <th scope="col" data-t="list.col.transcript">Transcript</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p id="meetings-empty" class="muted" data-t="list.empty" hidden>No meetings yet.</p>
+    </section>
+
+    <section id="meeting" class="view" hidden aria-labelledby="meeting-title">
+      <a href="#meetings" class="back" data-t="web.back">All meetings</a>
+      <h1 id="meeting-title"></h1>
+      <dl id="meeting-facts" class="facts"></dl>
+      <div class="actions">
+        <button id="open-folder" type="button" data-t="web.open_folder">Open folder</button>
+        <button id="open-transcript" type="button" data-t="summary.open">Open the transcript</button>
+      </div>
+      <p id="open-result" class="muted" role="status"></p>
+
+      <h2 data-t="web.transcribe_title">Transcribe</h2>
+      <form id="transcribe-form" class="row">
+        <label for="engine" data-t="transcribe.which_engine">Transcribe with</label>
+        <select id="engine"></select>
+        <button id="transcribe" type="submit" data-t="web.transcribe">Transcribe</button>
+      </form>
+      <div id="confirm-spend" class="confirm" role="alertdialog" aria-labelledby="confirm-spend-text" hidden>
+        <p id="confirm-spend-text"></p>
+        <div class="actions">
+          <button id="confirm-yes" type="button" class="primary" data-t="answer.yes">Yes</button>
+          <button id="confirm-no" type="button" data-t="answer.no">No</button>
+        </div>
+      </div>
+      <div id="transcribe-progress" class="job" hidden></div>
+
+      <h2 data-t="web.deliveries">Deliveries</h2>
+      <div class="table-wrap">
+        <table id="deliveries-table">
+          <thead><tr>
+            <th scope="col" data-t="retry.col.destination">Destination</th>
+            <th scope="col" data-t="retry.col.stage">What</th>
+            <th scope="col" data-t="list.col.status">Status</th>
+            <th scope="col" data-t="dest.col.where">Where</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p id="deliveries-empty" class="muted" data-t="web.no_deliveries" hidden>Not sent anywhere.</p>
+
+      <h2 data-t="web.transcript">Transcript</h2>
+      <p id="transcript-meta" class="muted"></p>
+      <ol id="transcript" class="transcript"></ol>
+      <p id="transcript-empty" class="muted" data-t="web.no_transcript" hidden>No transcript yet.</p>
+    </section>
+
+    <section id="destinations" class="view" hidden aria-labelledby="destinations-title">
+      <div class="view-head">
+        <h1 id="destinations-title" data-t="web.nav.destinations">Destinations</h1>
+      </div>
+      <div class="table-wrap">
+        <table id="destinations-table">
+          <thead><tr>
+            <th scope="col" data-t="dest.col.name">Name</th>
+            <th scope="col" data-t="dest.col.type">Type</th>
+            <th scope="col" data-t="dest.col.state">State</th>
+            <th scope="col" data-t="dest.col.sends">Sends</th>
+            <th scope="col" data-t="dest.col.where">Where</th>
+            <th scope="col" data-t="web.secrets">Secrets</th>
+            <th scope="col"><span class="sr-only" data-t="web.col.actions">Actions</span></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p id="destinations-empty" class="muted" data-t="dest.none" hidden>No destinations.</p>
+      <p id="dest-result" role="status"></p>
+
+      <h2 data-t="web.dest.add">Add a destination</h2>
+      <form id="dest-start" class="grid-form">
+        <label for="dest-type" data-t="dest.col.type">Type</label>
+        <select id="dest-type"></select>
+        <label for="dest-name" data-t="dest.col.name">Name</label>
+        <input id="dest-name" autocomplete="off" maxlength="32" pattern="[a-z][a-z0-9_\-]{0,31}" required>
+        <p id="dest-replaces" class="span hint warn" hidden></p>
+        <div class="span"><button type="submit" data-t="web.next">Next</button></div>
+      </form>
+      <form id="dest-form" class="grid-form" hidden novalidate>
+        <div id="dest-fields" class="span"></div>
+        <label class="check span"><input type="checkbox" id="dest-force"> <span data-t="web.dest.force">Save even if the check fails</span></label>
+        <div class="span actions">
+          <button id="dest-submit" type="submit" class="primary" data-t="web.next">Next</button>
+          <button id="dest-cancel" type="button" data-t="web.cancel">Cancel</button>
+        </div>
+      </form>
+    </section>
+
+    <section id="settings" class="view" hidden aria-labelledby="settings-title">
+      <h1 id="settings-title" data-t="web.nav.settings">Settings</h1>
+      <form id="settings-form" class="grid-form">
+        <label for="s-recording_mode" data-t="mode.question">When should minuta record?</label>
+        <select id="s-recording_mode" name="recording_mode"></select>
+        <label for="s-transcription_mode" data-t="setup.mode">Transcription</label>
+        <select id="s-transcription_mode" name="transcription_mode"></select>
+        <label for="s-engine" data-t="setup.engine">Transcription engine</label>
+        <select id="s-engine" name="engine"></select>
+        <label for="s-local_model" data-t="web.local_model">Local model</label>
+        <select id="s-local_model" name="local_model"></select>
+        <label for="s-vercel_model" data-t="setup.vercel_model">Model</label>
+        <select id="s-vercel_model" name="vercel_model"></select>
+        <label for="s-max_usd" data-t="setup.max_usd">Spending cap</label>
+        <input id="s-max_usd" name="max_usd" type="number" min="0" max="1000" step="0.01">
+        <label for="s-api_key" data-t="setup.api_key">API key</label>
+        <div>
+          <input id="s-api_key" name="api_key" type="password" autocomplete="off" aria-describedby="s-api_key-hint">
+          <p id="s-api_key-hint" class="hint"></p>
+        </div>
+        <label for="s-language" data-t="web.language">Language</label>
+        <select id="s-language" name="language"></select>
+        <label for="s-name" data-t="setup.name">Your name</label>
+        <input id="s-name" name="name" maxlength="80" required>
+        <label for="s-others_name" data-t="web.others_name">Everyone else</label>
+        <input id="s-others_name" name="others_name" maxlength="80" required>
+        <div class="span"><button type="submit" class="primary" data-t="web.save">Save</button></div>
+      </form>
+      <p id="settings-result" role="status"></p>
+    </section>
+
+    <section id="status" class="view" hidden aria-labelledby="status-title">
+      <div class="view-head">
+        <h1 id="status-title" data-t="web.nav.status">Status</h1>
+        <button id="status-refresh" type="button" data-t="web.refresh">Refresh</button>
+      </div>
+      <dl id="status-facts" class="facts"></dl>
+      <h2 data-t="menu.doctor">Check the installation</h2>
+      <div class="table-wrap">
+        <table id="doctor-table">
+          <thead><tr>
+            <th scope="col"><span class="sr-only" data-t="list.col.status">Status</span></th>
+            <th scope="col" data-t="doctor.col.check">Check</th>
+            <th scope="col" data-t="doctor.col.detail">Detail</th>
+            <th scope="col"><span class="sr-only" data-t="web.col.actions">Actions</span></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

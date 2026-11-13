@@ -370,6 +370,17 @@ chrome.runtime.onConnect.addListener((port) => {
   health();
 });
 
+// The minuta page (app.html) can pair again: pick up its new token.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local' || !(changes.token || changes.port)) return;
+  const token = changes.token ? changes.token.newValue || null : settings.token;
+  const p = changes.port ? Number(changes.port.newValue) || DEFAULT_PORT : settings.port;
+  if (token === settings.token && p === settings.port) return;
+  settings = { port: p, token };
+  authOk = true;
+  health();
+});
+
 chrome.alarms.create('health', { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener(() => health());
 paint();

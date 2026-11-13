@@ -136,4 +136,10 @@ $('code').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('pair').
 $('settings-toggle').addEventListener('click', () => { $('settings').hidden = !$('settings').hidden; });
 $('save-port').addEventListener('click', () => act('port', { port: $('port').value.trim() }));
 
+// Everything else (meetings, transcripts, destinations, settings) is on the minuta page.
+$('open-app').addEventListener('click', () => {
+  chrome.tabs.create({ url: chrome.runtime.getURL('app.html') });
+  window.close();
+});
+
 setInterval(tickClock, 500);
