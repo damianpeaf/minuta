@@ -437,6 +437,18 @@ class RcloneDestination(Destination):
 
     # --- interactive setup ---------------------------------------------------------------------
     @classmethod
+    def form(cls, name: str, known: dict, secrets=None, runner: Runner = subprocess.run, **kw) -> list:
+        from minuta.destinations.rclone_setup import form
+
+        return form(cls, name, known, secrets, runner)
+
+    @classmethod
+    def form_effect(cls, name: str, known: dict, secrets=None, runner: Runner = subprocess.run, **kw) -> dict:
+        from minuta.destinations.rclone_setup import form_effect
+
+        return form_effect(cls, name, known, secrets, runner)
+
+    @classmethod
     def configure(cls, name: str, options: dict, prompter=None, secrets=None,
                   runner: Runner = subprocess.run) -> dict | None:
         from minuta.destinations.rclone_setup import configure

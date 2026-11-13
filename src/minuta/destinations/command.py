@@ -122,14 +122,13 @@ class CommandDestination(Destination):
         return found
 
     @classmethod
-    def configure(cls, name: str, options: dict, prompter=None, secrets=None) -> dict:
-        """In a terminal, asks for the program unless `command` was given."""
-        from minuta.i18n import t
+    def form(cls, name: str, known: dict, secrets=None, **kw) -> list:
+        """Asks for the program unless `command` (or `argv`) was given."""
+        from minuta.forms import Field
 
-        opts = dict(options)
-        if prompter is not None and not opts.get("command"):
-            opts["command"] = prompter.text(t("setup.command"))
-        return opts
+        if known.get("command") or known.get("argv"):
+            return []
+        return [Field("command", "text", "setup.command", required=True)]
 
     def check(self) -> CheckResult:
         try:

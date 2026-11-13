@@ -53,6 +53,14 @@ def _yaml(value) -> str:
     return json.dumps(value, ensure_ascii=False)  # a JSON string is a valid YAML scalar
 
 
+def _existing_folder(value: str) -> str:
+    from minuta.i18n import t
+
+    if not Path(value).expanduser().is_dir():
+        raise ValueError(t("form.not_a_folder", path=value))
+    return value
+
+
 class ObsidianDestination(Destination):
     """Write each meeting as a Markdown note with frontmatter in an Obsidian vault."""
 
@@ -81,16 +89,22 @@ class ObsidianDestination(Destination):
         return [str(t).strip().lstrip("#") for t in tags if str(t).strip()]
 
     @classmethod
-    def configure(cls, name: str, options: dict, prompter=None, secrets=None) -> dict:
-        """In a terminal, asks for the vault and the folder inside it unless they were given."""
-        from minuta.i18n import t
+    def form(cls, name: str, known: dict, secrets=None, **kw) -> list:
+        """Asks for the vault and the folder inside it unless they were given."""
+        from minuta.forms import Field
 
-        opts = dict(options)
-        if prompter is not None:
-            if not opts.get("vault"):
-                opts["vault"] = prompter.path(t("setup.obsidian.vault"))
-            if "folder" not in opts:
-                opts["folder"] = prompter.text(t("setup.obsidian.folder"), "Meetings")
+        out = []
+        if not known.get("vault"):
+            out.append(Field("vault", "path", "setup.obsidian.vault", required=True, validate=_existing_folder))
+        if "folder" not in known:
+            out.append(Field("folder", "text", "setup.obsidian.folder", default="Meetings"))
+        return out
+
+    @classmethod
+    def configure(cls, name: str, options: dict, prompter=None, secrets=None) -> dict | None:
+        opts = cls.ask(name, options, prompter, secrets)
+        if opts is None:
+            return None
         if opts.get("vault"):
             opts["vault"] = str(Path(str(opts["vault"])).expanduser())
         return opts

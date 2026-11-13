@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import contextlib
+import threading
 
 _lang = "en"
+_local = threading.local()  # a language forced for one thread only (the server translates per request)
 
 STRINGS: dict[str, dict[str, str]] = {
     # --- setup ---------------------------------------------------------------------
@@ -592,19 +594,41 @@ STRINGS: dict[str, dict[str, str]] = {
     "notion.database": {"en": "Link or id of the database", "es": "Enlace o id de la base de datos"},
     "notion.parent": {"en": "Link or id of the page", "es": "Enlace o id de la página"},
     "notion.created": {"en": "Database created: {url}", "es": "Base de datos creada: {url}"},
+    # --- shared questions (forms.py) ----------------------------------------------------
+    "form.required": {"en": "An answer is required.", "es": "Falta la respuesta."},
+    "form.invalid_value": {"en": "This is not a valid answer.", "es": "Esta respuesta no es válida."},
+    "form.not_a_choice": {"en": "Pick one of the options.", "es": "Elige una de las opciones."},
+    "form.too_long": {"en": "This answer is too long.", "es": "Esta respuesta es demasiado larga."},
+    "form.not_valid": {"en": "Not valid: {error}", "es": "No es válido: {error}"},
+    "form.not_a_folder": {"en": "{path} is not a folder", "es": "{path} no es una carpeta"},
+    "rclone.in_terminal": {
+        "en": "To connect a new remote, run `minuta destinations add NAME --type rclone` in a terminal: rclone signs "
+              "you in there.",
+        "es": "Para conectar un remote nuevo, ejecuta `minuta destinations add NOMBRE --type rclone` en una terminal: "
+              "rclone inicia la sesión ahí.",
+    },
+    # --- jobs and the API -----------------------------------------------------------------
+    "api.not_found": {"en": "Not found.", "es": "No se encontró."},
+    "retry.step": {"en": "Sending again", "es": "Enviando de nuevo"},
+    "retry.step_done": {"en": "Sent again", "es": "Enviado de nuevo"},
+    "transcribe.job_cancelled": {"en": "Transcription cancelled.", "es": "Transcripción cancelada."},
+    "transcribe.queued": {
+        "en": "Waiting: {n} transcription(s) ahead.",
+        "es": "En espera: {n} transcripción(es) antes.",
+    },
 }
 
 
 @contextlib.contextmanager
 def forced_language(lang: str):
-    """Use `lang` inside the block (`--json` output stays English whatever the CLI's language)."""
-    global _lang
-    before = _lang
-    _lang = lang
+    """Use `lang` inside the block, in this thread only (`--json` output stays English whatever the CLI's
+    language; the server answers in the configured one while other threads keep theirs)."""
+    before = getattr(_local, "lang", None)
+    _local.lang = lang if lang in ("en", "es") else "en"
     try:
         yield
     finally:
-        _lang = before
+        _local.lang = before
 
 
 def set_language(lang: str | None) -> None:
@@ -613,12 +637,18 @@ def set_language(lang: str | None) -> None:
 
 
 def language() -> str:
-    return _lang
+    return getattr(_local, "lang", None) or _lang
 
 
 def t(key: str, **kw) -> str:
     entry = STRINGS.get(key)
     if entry is None:
         return key
-    text = entry.get(_lang) or entry["en"]
+    text = entry.get(language()) or entry["en"]
     return text.format(**kw) if kw else text
+
+
+def strings(lang: str) -> dict[str, str]:
+    """Every string in `lang` (English where it has no translation): the extension's page uses these, so
+    its texts are not translated twice."""
+    return {k: v.get(lang) or v["en"] for k, v in STRINGS.items()}

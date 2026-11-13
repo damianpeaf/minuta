@@ -58,6 +58,24 @@ MAX_REDIRECTS = 3
 CHUNK = 1 << 16
 
 
+def _valid_url(value: str) -> str:
+    problem = url_problem(value)
+    if problem:
+        raise ValueError(problem)
+    return value
+
+
+def _valid_key(value: str) -> str:
+    if len(value) < MIN_KEY_LENGTH:
+        raise ValueError(f"signing_key must be at least {MIN_KEY_LENGTH} characters")
+    return value
+
+
+def _valid_headers(value: str) -> str:
+    parse_headers(value)  # raises ValueError with the reason
+    return value
+
+
 def url_problem(url: str) -> str | None:
     """Why this URL is not allowed, or None. https only; plain http only to this computer."""
     try:
@@ -206,20 +224,27 @@ class WebhookDestination(Destination):
         return headers
 
     @classmethod
-    def configure(cls, name: str, options: dict, prompter=None, secrets=None) -> dict:
-        """In a terminal, asks for the URL, the signing key, an optional header and whether to attach audio."""
-        from minuta.i18n import t
+    def form(cls, name: str, known: dict, secrets=None, **kw) -> list:
+        """The URL, the signing key, an optional header and whether to attach the audio."""
+        from minuta.forms import Field
 
-        opts = dict(options)
-        if prompter is None:
-            return opts
-        if not opts.get("url"):
-            opts["url"] = prompter.text(t("setup.webhook.url"))
-        if not opts.get("signing_key") and not opts.get("signing_key_secret"):
-            opts["signing_key"] = prompter.password(t("setup.webhook.key"))
-        if not opts.get("headers") and not opts.get("headers_secret"):
-            opts["headers"] = prompter.password(t("setup.webhook.headers"))
-        if "audio" not in opts.get("send", ()) and prompter.confirm(t("setup.webhook.audio"), False):
+        out = []
+        if not known.get("url"):
+            out.append(Field("url", "text", "setup.webhook.url", required=True, validate=_valid_url))
+        if "signing_key" not in known and not known.get("signing_key_secret"):
+            out.append(Field("signing_key", "secret", "setup.webhook.key", required=True, validate=_valid_key))
+        if "headers" not in known and not known.get("headers_secret"):
+            out.append(Field("headers", "secret", "setup.webhook.headers", validate=_valid_headers))
+        if "audio" not in (known.get("send") or ()) and "_audio" not in known:
+            out.append(Field("_audio", "bool", "setup.webhook.audio", default=False))
+        return out
+
+    @classmethod
+    def configure(cls, name: str, options: dict, prompter=None, secrets=None) -> dict | None:
+        opts = cls.ask(name, options, prompter, secrets)
+        if opts is None:
+            return None
+        if opts.pop("_audio", False):
             opts["send"] = list(PARTS)
         return opts
 

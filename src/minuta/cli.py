@@ -241,14 +241,8 @@ def choose_engine(cfg: dict, meeting, args) -> tuple[str, str | None] | None:
 
 
 class TranscriptionView:
-    """Turns pipeline progress into lines: a finished step gets an 'ok' line, the current one a bar."""
-
-    LABELS = {"audio": "transcribe.step.audio", "model": "transcribe.step.model",
-              "download": "transcribe.step.download", "transcribe": "transcribe.step.transcribe",
-              "deliver": "transcribe.step.deliver"}
-    DONE = {"audio": "transcribe.done.audio", "model": "transcribe.done.model",
-            "download": "transcribe.done.download", "transcribe": "transcribe.done.transcribe",
-            "deliver": "transcribe.done.deliver"}
+    """Turns pipeline progress into lines: a finished step gets an 'ok' line, the current one a bar.
+    The same view shows a job of the background service (`follow_job`)."""
 
     def __init__(self):
         self.step = None
@@ -256,15 +250,15 @@ class TranscriptionView:
         self.info: dict = {}
 
     def __call__(self, step: str, fraction, info: dict) -> None:
-        from minuta import ui
+        from minuta import actions, ui
 
         if step != self.step:
             self.close()
             if step == "done":
                 return
             self.step, self.info = step, dict(info)
-            kw = self._kw(info)
-            self.bar = ui.Bar(t(self.LABELS.get(step, step), **kw), unit="bytes" if step == "download" else "")
+            label = actions.step_label("transcribe", step, info) or step
+            self.bar = ui.Bar(label, unit="bytes" if step == "download" else "")
             self.bar.__enter__()
         self.info.update(info)
         if self.bar is not None and fraction is not None:
@@ -273,24 +267,52 @@ class TranscriptionView:
             else:
                 self.bar.update(round(fraction * 1000), 1000)
 
-    def _kw(self, info: dict) -> dict:
-        from minuta import ui
-
-        model = str(info.get("model") or info.get("engine") or "").rsplit("/", 1)[-1]
-        total = info.get("total")
-        size = f" ({total / 1e6:.0f} MB)" if self.step == "download" and total else ""
-        return {"model": model, "size": size, "speech": ui.duration(total) if total else "-"}
-
     def close(self, failed: bool = False) -> None:
-        from minuta import ui
+        from minuta import actions, ui
 
         if self.bar is not None:
             self.bar.__exit__(None, None, None)
             self.bar = None
-            if not failed and self.step in self.DONE:
-                ui.ok(t(self.DONE[self.step], **self._kw(self.info)))
+            if not failed and self.step in actions.STEP_DONE:
+                ui.ok(actions.step_label("transcribe", self.step, self.info, done=True))
         if failed:
             self.step = None
+
+
+class JobFailed(Exception):
+    def __init__(self, job: dict):
+        super().__init__(job.get("error") or job.get("state"))
+        self.job = job
+
+
+def follow_job(port: int, job: dict, on_progress) -> dict:
+    """Show a job of the background service through `on_progress` until it ends; its result. Ctrl+C
+    cancels it there. Steps that passed between two looks are shown too, so no step is skipped."""
+    from minuta import client
+
+    seen: list[str] = []
+    try:
+        while True:
+            for step in job.get("steps") or []:
+                if step not in seen and step != job.get("step"):
+                    seen.append(step)
+                    on_progress(step, 1.0, {})
+            if job.get("step"):
+                if job["step"] not in seen:
+                    seen.append(job["step"])
+                on_progress(job["step"], job.get("fraction"), job.get("info") or {})
+            if job["state"] == "done":
+                return job.get("result") or {}
+            if job["state"] in ("error", "cancelled"):
+                raise JobFailed(job)
+            time.sleep(0.4)
+            code, body = client.call(port, "GET", f"/jobs/{job['id']}")
+            if code != 200:
+                raise JobFailed({"state": "error", "error": body.get("error") or f"HTTP {code}"})
+            job = body["job"]
+    except KeyboardInterrupt:
+        client.call(port, "POST", f"/jobs/{job['id']}/cancel")
+        raise
 
 
 def cmd_transcribe(args) -> int:
@@ -299,8 +321,7 @@ def cmd_transcribe(args) -> int:
         return 1
     from minuta import actions, ui
     from minuta.transcription import price_per_minute
-    from minuta.transcription.budget import Budget, BudgetExceeded
-    from minuta.transcription.pipeline import estimate_run
+    from minuta.transcription.budget import BudgetExceeded
 
     cli_logging(getattr(args, "verbose", False))
     store = actions.store_for(cfg)
@@ -321,20 +342,25 @@ def cmd_transcribe(args) -> int:
     if picked is None:
         return 1
     engine, model = picked
-    run_cfg = actions.with_engine(cfg, engine, model)
     window = None
     if args.from_min is not None or args.to_min is not None:
         window = ((args.from_min or 0) * 60, (args.to_min if args.to_min is not None else 10**6) * 60)
-    cap = float(args.max_usd if args.max_usd is not None else cfg["transcription"].get("max_usd") or 0)
-    budget = None
-    if price_per_minute(engine, run_cfg) > 0:
-        with ui.step(t("transcribe.measuring")):
-            est = estimate_run(meeting, run_cfg, engine, router=actions.router_for(cfg), window=window)
+    try:
+        if price_per_minute(engine, actions.with_engine(cfg, engine, model)) > 0:
+            with ui.step(t("transcribe.measuring")):
+                plan = actions.plan_transcription(cfg, meeting, engine, model, args.max_usd, window)
+        else:
+            plan = actions.plan_transcription(cfg, meeting, engine, model, args.max_usd, window)
+    except ValueError as e:
+        ui.error(str(e))
+        return 1
+    est = plan["estimate"]
+    if plan["paid"]:
         ui.say(t("transcribe.estimate", engine=model or engine, minutes=est["seconds"] / 60, usd=est["usd"]))
         if args.estimate:
             return 0
-        if est["usd"] > cap:
-            ui.error(t("transcribe.over_cap", cap=cap))
+        if plan["over_cap"]:
+            ui.error(t("transcribe.over_cap", cap=plan["cap"]))
             return 3
         if not args.yes:
             if not interactive(args):
@@ -343,17 +369,30 @@ def cmd_transcribe(args) -> int:
             if not ask().confirm(t("transcribe.confirm", usd=est["usd"]), False):
                 ui.say(t("transcribe.cancelled"))
                 return 1
-        budget = Budget(cap)
     elif args.estimate:
         ui.say(t("transcribe.estimate", engine=engine, minutes=0.0, usd=0.0))
         return 0
     view = TranscriptionView()
     try:
-        summary = actions.transcribe(run_cfg, meeting, engine, budget=budget, window=window, on_progress=view)
+        summary = _transcribe_now(cfg, meeting, plan, args, view)
     except BudgetExceeded as e:
         view.close(failed=True)
         ui.error(str(e))
         return 3
+    except JobFailed as e:
+        view.close(failed=True)
+        if e.job.get("state") == "cancelled":
+            ui.say(t("transcribe.job_cancelled"))
+            return 1
+        if e.job.get("error_kind") == "BudgetExceeded":
+            ui.error(e.job["error"])
+            return 3
+        ui.fail(t("transcribe.failed", error=str(e)[:300]))
+        ui.say(t("see_log", path=paths.log_dir() / "server.log"), style="dim")
+        return 1
+    except KeyboardInterrupt:
+        view.close(failed=True)
+        raise
     except Exception as e:
         view.close(failed=True)
         ui.fail(t("transcribe.failed", error=str(e)[:300]))
@@ -364,6 +403,23 @@ def cmd_transcribe(args) -> int:
     if interactive(args) and getattr(args, "from_menu", False):
         offer_transcript(cfg, meeting)
     return 0
+
+
+def _transcribe_now(cfg: dict, meeting, plan: dict, args, view) -> dict:
+    """In the background service when it runs (the page shows the same job), else in this process."""
+    from minuta import actions, client, ui
+
+    port = client.service(cfg)
+    if port is None:
+        return actions.run_transcription(cfg, meeting, plan, on_progress=view)
+    body = {"engine": plan["engine"], "model": plan["model"], "max_usd": plan["cap"], "confirm": True,
+            "window": plan["window"]}
+    code, out = client.call(port, "POST", f"/meetings/{meeting.id}/transcribe", body)
+    if code != 202:
+        raise RuntimeError(out.get("error") or f"HTTP {code}")
+    if out["job"].get("position"):
+        ui.say(t("transcribe.queued", n=out["job"]["position"]), style="dim")
+    return follow_job(port, out["job"], view)
 
 
 def print_summary(s: dict) -> None:
@@ -507,40 +563,28 @@ def cmd_destinations(args) -> int:
     if args.name not in dests:
         ui.error(t("dest.no_such", name=args.name))
         return 1
-    from minuta import credentials
-
     if action == "remove":
-        reg.forget_secrets(dests.pop(args.name), credentials.store(cfg))
-        config_mod.save(cfg)
+        actions.remove_destination(args.name)
         ui.ok(t("dest.removed", name=args.name))
         return 0
     if action in ("enable", "disable"):
-        dests[args.name]["enabled"] = action == "enable"
-        config_mod.save(cfg)
+        actions.set_destination_enabled(args.name, action == "enable")
         ui.ok(t(f"dest.{action}_done", name=args.name))
         return 0
     if action == "test":
-        try:
-            with ui.step(t("dest.testing", name=args.name)):
-                dest = reg.create(args.name, dests[args.name], credentials.store(cfg))
-                check = dest.check()
-        except Exception as e:  # noqa: BLE001
-            ui.fail(f"{args.name}: {redact(str(e))}")
-            return 1
-        (ui.ok if check.ok else ui.fail)(f"{args.name}: {check.message}")
-        if not check.ok or not args.live:
-            return 0 if check.ok else 1
-        ping = getattr(dest, "ping", None)
-        if ping is None:
+        with ui.step(t("dest.live", name=args.name) if args.live else t("dest.testing", name=args.name)):
+            r = actions.test_destination(cfg, args.name, live=args.live)
+        live = r["live"]  # None when not asked for or when the check failed
+        (ui.ok if r["ok"] or live else ui.fail)(f"{args.name}: {r['message']}")
+        if live is None:
+            return 0 if r["ok"] else 1
+        if not live["supported"]:
             ui.say(t("dest.no_live", name=args.name, kind=dests[args.name].get("type")))
             return 0
-        try:
-            with ui.step(t("dest.live", name=args.name)):
-                receipt = ping()
-        except Exception as e:  # noqa: BLE001
-            ui.fail(t("dest.live_failed", name=args.name, error=redact(str(e))))
+        if not live["ok"]:
+            ui.fail(t("dest.live_failed", name=args.name, error=live["error"]))
             return 1
-        ui.ok(t("dest.live_ok", name=args.name, url=receipt.url or "").rstrip())
+        ui.ok(t("dest.live_ok", name=args.name, url=live.get("url") or "").rstrip())
         return 0
     return 2
 
@@ -576,8 +620,23 @@ def cmd_retry(args) -> int:
     if not targets:
         ui.say(t("retry.none"))
         return 0
+    from minuta import client
+
+    port = client.service(cfg)
     with ui.Bar(t("retry.sending", n=len(targets))) as bar:
-        rows = actions.retry(cfg, targets, on_progress=lambda step, f, info: bar.update(f or 0, 1))
+        progress = lambda step, f, info: bar.update(f or 0, 1)  # noqa: E731
+        if port is None:
+            rows = actions.retry(cfg, targets, on_progress=progress)
+        else:
+            code, out = client.call(port, "POST", "/retry", {"meetings": [m.id for m in targets]})
+            if code != 202:
+                ui.error(out.get("error") or f"HTTP {code}")
+                return 1
+            try:
+                rows = follow_job(port, out["job"], progress)["rows"]
+            except JobFailed as e:
+                ui.error(str(e))
+                return 1
     worst = 0
     table = []
     for r in rows:

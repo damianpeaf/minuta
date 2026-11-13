@@ -10,9 +10,12 @@ Endpoints (POST bodies are JSON):
     GET  /latest    the latest finished meeting (for the popup)
     POST /ping      the extension is alive (sent even without a Meet tab)
     POST /heartbeat state of a Meet tab every 5 s; adds to the meeting's diagnostics
-    GET  /meetings  every meeting, as `minuta list --json`
+    GET  /meetings  every meeting, as `minuta list --json` (`?all=1`: discarded ones too)
     POST /mode      {"mode": "auto" | "ask" | "manual"}: when the extension records
     POST /start /chunk /title /mute /pause /end /discard   one recording
+
+The endpoints of the extension's page (meetings, transcription jobs, destinations, settings) are in
+`api.py`. Their bodies are at most 64 KB.
 """
 
 from __future__ import annotations
@@ -27,8 +30,9 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from minuta import __version__, audio, credentials, pairing, paths
+from minuta import __version__, api, audio, credentials, pairing, paths
 from minuta import config as config_mod
+from minuta.jobs import Jobs
 from minuta.meetings import (
     DISCARDED,
     ERROR,
@@ -84,20 +88,23 @@ class App:
         self.process_inline = process_inline
         self.stopping = threading.Event()
         self._cfg_mtime = _mtime(paths.config_file())
+        self._reload_lock = threading.Lock()
+        self.jobs = Jobs()
 
     def reload_config(self) -> None:
         """Pick up changes to config.toml (`minuta destinations add`, an edit by hand) without a restart.
         The port and the data folder still need one."""
-        mtime = _mtime(paths.config_file())
-        if mtime is None or mtime == self._cfg_mtime:
-            return
-        self._cfg_mtime = mtime
-        try:
-            cfg = config_mod.load()
-        except Exception as e:  # noqa: BLE001 - a half-edited file keeps the previous config
-            log.warning("config.toml not reloaded: %s", e)
-            return
-        self.cfg, self.router = cfg, Router(cfg, self.secrets)
+        with self._reload_lock:
+            mtime = _mtime(paths.config_file())
+            if mtime is None or mtime == self._cfg_mtime:
+                return
+            self._cfg_mtime = mtime
+            try:
+                cfg = config_mod.load()
+            except Exception as e:  # noqa: BLE001 - a half-edited file keeps the previous config
+                log.warning("config.toml not reloaded: %s", e)
+                return
+            self.cfg, self.router = cfg, Router(cfg, self.secrets)
         log.info("config.toml reloaded")
 
     # --- extension liveness ------------------------------------------------------
@@ -156,7 +163,8 @@ class App:
 
         try:
             budget = Budget(float(self.cfg["transcription"].get("max_usd") or 0))
-            transcribe(m, self.cfg, router=self.router, secrets=self.secrets, budget=budget)
+            with self.jobs.transcribing:  # one transcription at a time, with the page's and the CLI's
+                transcribe(m, self.cfg, router=self.router, secrets=self.secrets, budget=budget)
         except Exception as e:  # noqa: BLE001
             log.warning("automatic transcription of %s failed: %s", m.id, redact(str(e)))
 
@@ -373,7 +381,9 @@ def make_handler(app: App, port_ref: list[int]):
             self._json(403, {"error": "forbidden"})
 
         def do_GET(self):  # noqa: N802
-            path = self.path.split("?", 1)[0]
+            path, _, query = self.path.partition("?")
+            if api.is_api("GET", path):
+                return self._api("GET", path, {})
             if path == "/health":
                 if not self._gate(needs_token=False):
                     return
@@ -388,11 +398,13 @@ def make_handler(app: App, port_ref: list[int]):
             if path == "/meetings":
                 from minuta.actions import meetings
 
-                return self._json(200, {"ok": True, "meetings": meetings(app.cfg)})
+                app.reload_config()
+                return self._json(200, {"ok": True, "meetings": meetings(app.cfg, include_discarded="all=1" in query)})
             return self._json(200, {"ok": True, "meeting": app.latest()})
 
         def do_POST(self):  # noqa: N802
-            path = self.path.split("?", 1)[0].strip("/")
+            full = self.path.split("?", 1)[0]
+            path = full.strip("/")
             raw = self.headers.get("Content-Length")
             if raw is None:
                 if self.headers.get("Transfer-Encoding"):  # a body without a length: not read
@@ -404,8 +416,17 @@ def make_handler(app: App, port_ref: list[int]):
                 return self._json(400, {"error": "bad length"})
             if length < 0:
                 return self._json(400, {"error": "bad length"})
-            if length > (MAX_PAIR_BODY if path == "pair" else MAX_BODY):
+            limit = MAX_PAIR_BODY if path == "pair" else api.MAX_API_BODY if api.is_api("POST", full) else MAX_BODY
+            if length > limit:
                 return self._json(413, {"error": "too large"})
+            if api.is_api("POST", full):
+                if not self._gate(needs_token=api.needs_token("POST", full)):
+                    return
+                msg = self._read(length)
+                if msg is None:
+                    return
+                code, body = api.handle(app, "POST", full, msg)
+                return self._json(code, body)
             if path == "pair":
                 if not self._gate(needs_token=False):
                     return
@@ -427,6 +448,12 @@ def make_handler(app: App, port_ref: list[int]):
             if msg is None:
                 return
             code, body = app.handle(path, msg)
+            self._json(code, body)
+
+        def _api(self, method: str, path: str, msg: dict) -> None:
+            if not self._gate(needs_token=api.needs_token(method, path)):
+                return
+            code, body = api.handle(app, method, path, msg)
             self._json(code, body)
 
         def _read(self, length: int) -> dict | None:

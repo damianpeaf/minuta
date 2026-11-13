@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 if TYPE_CHECKING:
     from minuta.credentials import SecretStore
+    from minuta.forms import Field
     from minuta.meetings import Meeting
     from minuta.setup import Prompter
 
@@ -133,19 +134,43 @@ class Destination(ABC):
         return CheckResult(True)
 
     @classmethod
+    def form(cls, name: str, known: dict, secrets: SecretStore | None = None, **kw) -> list[Field]:
+        """The questions still to ask, given what is `known` (the options and the answers so far), as
+        `minuta.forms.Field`s; an empty list when nothing is missing. The terminal asks them with
+        questionary and the extension's page shows them as a form, so declare questions here rather
+        than asking in `configure()`. A question that depends on an answer goes in a later call.
+        The default asks nothing."""
+        return []
+
+    @classmethod
+    def form_effect(cls, name: str, known: dict, secrets: SecretStore | None = None, **kw) -> dict:
+        """After each step in a terminal: run what an answer asked for (rclone's own sign-in) and return
+        `known`, with answers removed to ask them again. Never called for the page."""
+        return known
+
+    @classmethod
+    def ask(cls, name: str, options: dict, prompter: Prompter | None, secrets: SecretStore | None = None,
+            **kw) -> dict | None:
+        """`options` plus the answers to `form()`, asked through `prompter` (None: nothing is asked)."""
+        if prompter is None:
+            return dict(options)
+        from minuta.forms import ask
+
+        return ask(cls, name, options, prompter, secrets, **kw)
+
+    @classmethod
     def configure(cls, name: str, options: dict, prompter: Prompter | None = None,
                   secrets: SecretStore | None = None) -> dict | None:
-        """Called once when the destination is added, before `check()`, by `minuta destinations add` and
-        the setup assistant (both through `minuta.setup.add_destination`).
+        """Called once when the destination is added, before `check()`, by `minuta destinations add`, the
+        setup assistant and the extension's page (all through `minuta.setup.add_destination`).
 
         `options` holds `type`, `enabled`, `send` and whatever the user gave (`--option`), secrets
-        still in plain text. Ask for what is missing through `prompter` (`text`, `password`,
-        `select`, `confirm`, `path`); it is None when nobody can answer, and then nothing may be asked.
-        Unlike `check()`, it may create things on the remote side, such as a folder or a database.
-        Return the options to save (secret options left in them are moved to the secret store by the
-        caller), or None to cancel. Raise `DestinationError` or `ValueError` to refuse with a message.
-        The default asks nothing."""
-        return dict(options)
+        still in plain text. `prompter` answers the questions of `form()` (see `ask()`); it is None
+        when nobody can answer. Turn the answers into options here. Unlike `check()`, it may create
+        things on the remote side, such as a folder or a database. Return the options to save (secret
+        options left in them are moved to the secret store by the caller), or None to cancel. Raise
+        `DestinationError` or `ValueError` to refuse with a message. The default asks `form()`."""
+        return cls.ask(name, options, prompter, secrets)
 
     @abstractmethod
     def send_meeting(self, meeting: Meeting, parts: MeetingParts, previous: Receipt | None = None) -> Receipt:

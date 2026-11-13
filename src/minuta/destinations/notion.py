@@ -583,30 +583,39 @@ class NotionDestination(Destination):
 
     # --- adding the destination ---------------------------------------------------------------
     @classmethod
-    def configure(cls, name: str, options: dict, prompter=None, secrets=None) -> dict:
-        """Ask for the token and the database, or create the database inside a page the user
-        shared with the integration (`parent_page`)."""
+    def form(cls, name: str, known: dict, secrets=None, **kw) -> list:
+        """The token, then an existing database or a page to create one in."""
+        from minuta.forms import Field
+
+        out = []
+        stored = bool(secrets is not None and known.get("token_secret") and secrets.get(known["token_secret"]))
+        if "token" not in known and not stored:
+            out.append(Field("token", "secret", "notion.token", help="notion.token_help", required=True))
+        if known.get("database") or known.get("parent_page"):
+            return out
+        if "_how" not in known:
+            out.append(Field("_how", "select", "notion.how", help="notion.share_help", default="existing",
+                             choices=[("existing", "notion.existing"), ("create", "notion.create")]))
+        elif known["_how"] == "create":
+            out.append(Field("parent_page", "text", "notion.parent", required=True, validate=_page_id))
+        else:
+            out.append(Field("database", "text", "notion.database", required=True, validate=_page_id))
+        return out
+
+    @classmethod
+    def configure(cls, name: str, options: dict, prompter=None, secrets=None) -> dict | None:
+        """Create the database inside a page the user shared with the integration (`parent_page`)."""
         from minuta.i18n import t
 
-        opts = dict(options)
+        opts = cls.ask(name, options, prompter, secrets)
+        if opts is None:
+            return None
+        opts.pop("_how", None)
         token = opts.get("token") or None
         if not token and secrets is not None and opts.get("token_secret"):
             token = secrets.get(opts["token_secret"])
-        if not token and prompter is not None:
-            print(t("notion.token_help"))
-            token = prompter.password(t("notion.token")) or None
-            if token:
-                opts["token"] = token
         parent = opts.pop("parent_page", None)
         database = opts.get("database")
-        if not database and not parent and prompter is not None:
-            how = prompter.select(t("notion.how"), [("existing", t("notion.existing")), ("create", t("notion.create"))],
-                             "existing")
-            print(t("notion.share_help"))
-            if how == "create":
-                parent = prompter.text(t("notion.parent"))
-            else:
-                database = prompter.text(t("notion.database"))
         if not database and parent:
             page_id = parse_id(parent)
             if not page_id:
@@ -619,6 +628,12 @@ class NotionDestination(Destination):
         if database:
             opts["database"] = parse_id(database) or database
         return opts
+
+
+def _page_id(value: str) -> str:
+    if not parse_id(value):
+        raise ValueError(f"{value!r} is not a Notion link or id")
+    return value
 
 
 def create_database(api: NotionAPI, page_id: str, title: str = DATABASE_TITLE) -> dict:

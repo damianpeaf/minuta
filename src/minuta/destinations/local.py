@@ -39,13 +39,22 @@ class LocalDestination(Destination):
         return Path(c).expanduser() if c else None
 
     @classmethod
-    def configure(cls, name: str, options: dict, prompter=None, secrets=None) -> dict:
-        """In a terminal, offers a folder to copy meetings to unless `copy_to` was given."""
-        from minuta.i18n import t
+    def form(cls, name: str, known: dict, secrets=None, **kw) -> list:
+        """Offers a folder to copy meetings to unless `copy_to` was given."""
+        from minuta.forms import Field
 
-        opts = dict(options)
-        if prompter is not None and "copy_to" not in opts and prompter.confirm(t("setup.copy"), False):
-            opts["copy_to"] = prompter.path(t("setup.copy_to"))
+        if "copy_to" in known:
+            return []
+        if "_copy" not in known:
+            return [Field("_copy", "bool", "setup.copy", default=False)]
+        return [Field("copy_to", "path", "setup.copy_to", required=True)] if known["_copy"] else []
+
+    @classmethod
+    def configure(cls, name: str, options: dict, prompter=None, secrets=None) -> dict | None:
+        opts = cls.ask(name, options, prompter, secrets)
+        if opts is None:
+            return None
+        opts.pop("_copy", None)
         if opts.get("copy_to"):
             opts["copy_to"] = str(Path(str(opts["copy_to"])).expanduser())
         return opts
