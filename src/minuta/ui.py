@@ -250,7 +250,7 @@ def open_with_system(path: Path) -> bool:
     try:
         if sys.platform == "darwin":
             subprocess.Popen(["open", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        elif os.name == "nt":
+        elif sys.platform == "win32":
             os.startfile(str(path))  # noqa: S606 - a path, not a command
         else:
             subprocess.Popen(["xdg-open", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
